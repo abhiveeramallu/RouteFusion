@@ -6,6 +6,13 @@ from functools import lru_cache
 from pathlib import Path
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _load_local_env_files() -> None:
     backend_dir = Path(__file__).resolve().parents[1]
     repo_root = Path(__file__).resolve().parents[2]
@@ -31,12 +38,17 @@ def _default_database_url() -> str:
     return f"sqlite:///{sqlite_path}"
 
 
+def _transient_database_url() -> str:
+    return "sqlite:///:memory:"
+
+
 _load_local_env_files()
 
 
 @dataclass(frozen=True)
 class Settings:
     app_name: str
+    transient_mode: bool
     database_url: str
     jwt_secret: str
     jwt_algorithm: str
@@ -48,11 +60,17 @@ class Settings:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     origins = os.getenv("CORS_ORIGINS", "http://localhost:5173")
+    transient_mode = _env_flag("ROUTEFUSION_TRANSIENT_MODE", False)
     return Settings(
         app_name="RouteFusion",
-        database_url=os.getenv(
-            "DATABASE_URL",
-            _default_database_url(),
+        transient_mode=transient_mode,
+        database_url=(
+            _transient_database_url()
+            if transient_mode
+            else os.getenv(
+                "DATABASE_URL",
+                _default_database_url(),
+            )
         ),
         jwt_secret=os.getenv("JWT_SECRET", "routefusion-demo-secret"),
         jwt_algorithm="HS256",

@@ -16,6 +16,7 @@ from app.routes.demo import router as demo_router
 from app.routes.parcel import router as parcel_router
 from app.routes.ride import router as ride_router
 from app.services.demo_seed import ensure_demo_driver
+from app.services.runtime_state import reset_runtime_state
 
 
 @asynccontextmanager
@@ -30,6 +31,8 @@ async def lifespan(_app: FastAPI):
     try:
         ensure_demo_user(db)
         ensure_demo_driver(db)
+        if settings.transient_mode:
+            reset_runtime_state(db)
     finally:
         db.close()
     yield

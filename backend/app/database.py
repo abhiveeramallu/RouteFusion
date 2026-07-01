@@ -4,6 +4,7 @@ from collections.abc import Generator
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
 
@@ -25,6 +26,12 @@ if not settings.database_url.startswith("sqlite"):
         pool_recycle=300,
         pool_size=5,
         max_overflow=10,
+    )
+elif settings.transient_mode:
+    # A single shared in-memory connection keeps transient demo state fast
+    # while still allowing normal SQLAlchemy sessions per request.
+    engine_kwargs.update(
+        poolclass=StaticPool,
     )
 
 engine = create_engine(settings.database_url, **engine_kwargs)

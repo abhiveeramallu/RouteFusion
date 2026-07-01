@@ -9,6 +9,8 @@ dist/
 coverage/
 backend/routefusion.db
 routefusion.db
+backend/routefusion-session.db
+routefusion-session.db
 backend/routefusion-test-runtime.db
 routefusion-test-runtime.db
 frontend/.vite/

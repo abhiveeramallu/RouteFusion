@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from sqlalchemy import delete, select
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Driver, Parcel, Ride, RouteDecision
 from app.schemas import DemoClearResponse, DemoLoadResponse, DriverRead, ParcelRead, RideRead
 from app.services.demo_seed import seed_demo_scenario
+from app.services.runtime_state import reset_runtime_state
 
 router = APIRouter(prefix="/demo", tags=["demo"])
 
@@ -29,23 +28,11 @@ def load_demo(
 def clear_demo(
     db: Session = Depends(get_db),
 ) -> DemoClearResponse:
-    cleared_decisions = db.query(RouteDecision).count()
-    cleared_rides = db.query(Ride).count()
-    cleared_parcels = db.query(Parcel).count()
-
-    db.execute(delete(RouteDecision))
-    db.execute(delete(Ride))
-    db.execute(delete(Parcel))
-
-    driver = db.scalar(select(Driver).limit(1))
-    if driver:
-        driver.status = "available"
-
-    db.commit()
+    cleared = reset_runtime_state(db)
 
     return DemoClearResponse(
-        cleared_rides=cleared_rides,
-        cleared_parcels=cleared_parcels,
-        cleared_decisions=cleared_decisions,
+        cleared_rides=cleared["cleared_rides"],
+        cleared_parcels=cleared["cleared_parcels"],
+        cleared_decisions=cleared["cleared_decisions"],
         message="All ride, parcel, and route decision data cleared.",
     )
