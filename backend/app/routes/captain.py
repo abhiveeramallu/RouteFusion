@@ -259,6 +259,27 @@ def get_latest_pair_decision(db: Session, ride_id: int, parcel_id: int) -> Route
     )
 
 
+def get_latest_pair_decisions_for_candidates(
+    db: Session,
+    ride_ids: list[int],
+    parcel_ids: list[int],
+) -> dict[tuple[int, int], RouteDecision]:
+    if not ride_ids or not parcel_ids:
+        return {}
+
+    decisions = db.scalars(
+        select(RouteDecision)
+        .where(RouteDecision.ride_id.in_(ride_ids), RouteDecision.parcel_id.in_(parcel_ids))
+        .order_by(desc(RouteDecision.created_at))
+    )
+
+    latest_by_pair: dict[tuple[int, int], RouteDecision] = {}
+    for decision in decisions:
+        latest_by_pair.setdefault((decision.ride_id, decision.parcel_id), decision)
+
+    return latest_by_pair
+
+
 def get_latest_ride_decision(db: Session, ride_id: int) -> RouteDecision | None:
     return db.scalar(
         select(RouteDecision)
@@ -348,6 +369,11 @@ def build_recommendation(db: Session) -> RecommendationResponse:
     else:
         rides = get_candidate_rides(db)
         parcels = get_candidate_parcels(db)
+        pair_decisions = get_latest_pair_decisions_for_candidates(
+            db,
+            [ride_candidate.id for ride_candidate in rides],
+            [parcel_candidate.id for parcel_candidate in parcels],
+        )
 
         ride = rides[0] if rides else None
         parcel = parcels[0] if parcels else None
@@ -359,7 +385,7 @@ def build_recommendation(db: Session) -> RecommendationResponse:
 
             for ride_candidate in rides:
                 for parcel_candidate in parcels:
-                    latest_pair_decision = get_latest_pair_decision(db, ride_candidate.id, parcel_candidate.id)
+                    latest_pair_decision = pair_decisions.get((ride_candidate.id, parcel_candidate.id))
                     if latest_pair_decision and latest_pair_decision.accepted is False:
                         continue
 
@@ -381,7 +407,7 @@ def build_recommendation(db: Session) -> RecommendationResponse:
                 )
 
             ride, parcel, optimization = best_match
-            latest_decision = get_latest_pair_decision(db, ride.id, parcel.id)
+            latest_decision = pair_decisions.get((ride.id, parcel.id))
             decision_mode = "pending"
             efficiency_score = float(optimization["efficiency_score"])
             extra_distance = float(optimization["extra_distance"])

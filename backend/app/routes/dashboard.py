@@ -41,6 +41,17 @@ def build_captain_summary(
     for decision in accepted_decisions:
         latest_decisions_by_pair.setdefault((decision.ride_id, decision.parcel_id), decision)
 
+    ride_ids = {decision.ride_id for decision in latest_decisions_by_pair.values()}
+    parcel_ids = {decision.parcel_id for decision in latest_decisions_by_pair.values()}
+    rides_by_id = {
+        ride.id: ride
+        for ride in db.scalars(select(Ride).where(Ride.id.in_(ride_ids)))
+    } if ride_ids else {}
+    parcels_by_id = {
+        parcel.id: parcel
+        for parcel in db.scalars(select(Parcel).where(Parcel.id.in_(parcel_ids)))
+    } if parcel_ids else {}
+
     combined_handled_ride_ids: set[int] = set()
     combined_handled_parcel_ids: set[int] = set()
     combined_paid_ride_ids: set[int] = set()
@@ -49,8 +60,8 @@ def build_captain_summary(
     captain_combined_trips = 0
 
     for decision in latest_decisions_by_pair.values():
-        ride = db.get(Ride, decision.ride_id)
-        parcel = db.get(Parcel, decision.parcel_id)
+        ride = rides_by_id.get(decision.ride_id)
+        parcel = parcels_by_id.get(decision.parcel_id)
         if not ride or not parcel:
             continue
 
@@ -144,9 +155,15 @@ def get_dashboard(
         captain_combined_trips,
     ) = build_captain_summary(db, accepted_decisions)
 
+    combined_parcel_ids = {decision.parcel_id for decision in combined_decisions}
+    combined_parcels_by_id = {
+        parcel.id: parcel
+        for parcel in db.scalars(select(Parcel).where(Parcel.id.in_(combined_parcel_ids)))
+    } if combined_parcel_ids else {}
+
     estimated_fuel_saved = 0.0
     for decision in combined_decisions:
-        parcel = db.get(Parcel, decision.parcel_id)
+        parcel = combined_parcels_by_id.get(decision.parcel_id)
         if not parcel:
             continue
         parcel_distance = route_distance_km(

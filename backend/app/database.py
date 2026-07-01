@@ -14,9 +14,21 @@ class Base(DeclarativeBase):
 
 settings = get_settings()
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+engine_kwargs = {
+    "connect_args": connect_args,
+}
+if not settings.database_url.startswith("sqlite"):
+    # Keep pooled Postgres connections healthy on hosted platforms like
+    # Render + Supabase where idle sockets can go stale between bursts.
+    engine_kwargs.update(
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=5,
+        max_overflow=10,
+    )
 
-engine = create_engine(settings.database_url, connect_args=connect_args)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+engine = create_engine(settings.database_url, **engine_kwargs)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
 def synchronize_legacy_schema() -> None:
