@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from itertools import chain
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Driver, Parcel, Ride, RouteDecision
-from app.schemas import ActivityItem, DashboardMetrics, DashboardResponse
+from app.routes.captain import build_recommendation
+from app.schemas import ActivityItem, AppSnapshotResponse, DashboardMetrics, DashboardResponse
 from app.services.pricing import (
     estimate_customer_pricing,
     estimate_parcel_base_price,
@@ -207,4 +208,26 @@ def get_dashboard(
             captain_combined_trips=captain_combined_trips,
         ),
         recent_activity=activities,
+    )
+
+
+@router.get("/snapshot", response_model=AppSnapshotResponse)
+def get_snapshot(
+    db: Session = Depends(get_db),
+) -> AppSnapshotResponse:
+    recommendation = None
+    try:
+        recommendation = build_recommendation(db)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+
+    rides = list(db.scalars(select(Ride).order_by(desc(Ride.created_at))))
+    parcels = list(db.scalars(select(Parcel).order_by(desc(Parcel.created_at))))
+
+    return AppSnapshotResponse(
+        dashboard=get_dashboard(db),
+        recommendation=recommendation,
+        rides=rides,
+        parcels=parcels,
     )

@@ -363,12 +363,18 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
   }
 
   function handleCaptainDecision(decision: CaptainDecision) {
+    if (isPending) {
+      return;
+    }
     startTransition(() => {
       void respondToCaptainDecision(decision).catch(() => undefined);
     });
   }
 
   function handleCaptainCompletion() {
+    if (isPending) {
+      return;
+    }
     startTransition(() => {
       void completeCaptainRoute().catch(() => undefined);
     });
@@ -1050,8 +1056,9 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
                       </div>
                       <button
                         type="button"
+                        disabled={isPending}
                         onClick={handleCaptainCompletion}
-                        className="inline-flex items-center justify-center gap-2 rounded-full border border-[#111111] bg-white px-5 py-3 text-sm font-semibold text-[#111827] transition hover:bg-[#111111] hover:text-white"
+                        className="inline-flex items-center justify-center gap-2 rounded-full border border-[#111111] bg-white px-5 py-3 text-sm font-semibold text-[#111827] transition hover:bg-[#111111] hover:text-white disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-white disabled:hover:text-[#111827]"
                       >
                         <HandCoins className="h-4 w-4" />
                         {isPending ? "Closing Route..." : "Mark Done & Collect Payment"}
@@ -1062,8 +1069,9 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
                       {canAcceptBoth ? (
                         <button
                           type="button"
+                          disabled={isPending}
                           onClick={() => handleCaptainDecision("accept_both")}
-                          className="inline-flex items-center justify-center gap-2 rounded-full bg-[#111111] px-5 py-3 text-center text-sm font-semibold text-white transition hover:bg-[#000000]"
+                          className="inline-flex items-center justify-center gap-2 rounded-full bg-[#111111] px-5 py-3 text-center text-sm font-semibold text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-[#111111]"
                         >
                           <CheckCircle2 className="h-4 w-4 shrink-0" />
                           {isPending ? "Saving..." : "Accept Both"}
@@ -1072,12 +1080,13 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
                       {canAcceptRide ? (
                         <button
                           type="button"
+                          disabled={isPending}
                           onClick={() => handleCaptainDecision("accept_ride")}
                           className={`inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 text-center text-sm font-semibold transition ${
                             canAcceptBoth
                               ? "border border-[#22C55E]/30 bg-[#f0fdf4] text-[#166534] hover:border-[#22C55E]"
                               : "bg-[#111111] text-white hover:bg-[#000000]"
-                          }`}
+                          } disabled:cursor-not-allowed disabled:opacity-60`}
                         >
                           <CarFront className="h-4 w-4 shrink-0" />
                           {canAcceptBoth ? "Accept Ride Only" : isPending ? "Saving..." : "Accept Ride"}
@@ -1086,12 +1095,13 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
                       {canAcceptParcel ? (
                         <button
                           type="button"
+                          disabled={isPending}
                           onClick={() => handleCaptainDecision("accept_parcel")}
                           className={`inline-flex items-center justify-center gap-2 rounded-full px-5 py-3 text-center text-sm font-semibold transition ${
                             canAcceptBoth
                               ? "border border-[#2563eb]/30 bg-[#eff6ff] text-[#1d4ed8] hover:border-[#2563eb]"
                               : "bg-[#111111] text-white hover:bg-[#000000]"
-                          }`}
+                          } disabled:cursor-not-allowed disabled:opacity-60`}
                         >
                           <Package className="h-4 w-4 shrink-0" />
                           {canAcceptBoth ? "Accept Parcel Only" : isPending ? "Saving..." : "Accept Parcel"}
@@ -1099,8 +1109,9 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
                       ) : null}
                       <button
                         type="button"
+                        disabled={isPending}
                         onClick={() => handleCaptainDecision("reject")}
-                        className="inline-flex items-center justify-center gap-2 rounded-full border border-[#dbe1e7] bg-white px-5 py-3 text-center text-sm font-semibold text-[#111827] transition hover:border-[#111111]"
+                        className="inline-flex items-center justify-center gap-2 rounded-full border border-[#dbe1e7] bg-white px-5 py-3 text-center text-sm font-semibold text-[#111827] transition hover:border-[#111111] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-[#dbe1e7]"
                       >
                         <XCircle className="h-4 w-4 shrink-0" />
                         Reject All

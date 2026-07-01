@@ -14,11 +14,8 @@ import {
   completeCaptainRecommendation,
   createParcel,
   createRide,
-  getDashboard,
-  getRecommendation,
+  getSnapshot,
   logoutSession,
-  listParcels,
-  listRides,
   loadDemo,
   respondToRecommendation,
   signIn,
@@ -137,18 +134,7 @@ function writeStoredSession(session: AuthResponse | null) {
 }
 
 async function fetchSnapshot() {
-  const [dashboard, recommendation, rides, parcels] = await Promise.all([
-    getDashboard(),
-    getRecommendation().catch((snapshotError) => {
-      if (snapshotError instanceof ApiError && snapshotError.status === 404) {
-        return null;
-      }
-      throw snapshotError;
-    }),
-    listRides(),
-    listParcels(),
-  ]);
-  return { dashboard, recommendation, rides, parcels };
+  return getSnapshot();
 }
 
 export function RouteFusionProvider({ children }: { children: ReactNode }) {
@@ -346,6 +332,11 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
       setBannerMessage(response.message);
       await refreshAll();
     } catch (decisionError) {
+      if (decisionError instanceof ApiError && decisionError.status === 404) {
+        setBannerMessage("Recommendation already changed. RouteFusion refreshed the queue.");
+        await refreshAll();
+        return;
+      }
       setError(decisionError instanceof Error ? decisionError.message : "Unable to save the captain decision.");
       throw decisionError;
     }
@@ -363,6 +354,11 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
       const snapshot = await fetchSnapshot();
       applySnapshot(snapshot, completedLocation ?? currentLocation);
     } catch (completionError) {
+      if (completionError instanceof ApiError && completionError.status === 404) {
+        setBannerMessage("Captain route was already closed. RouteFusion refreshed the queue.");
+        await refreshAll();
+        return;
+      }
       setError(completionError instanceof Error ? completionError.message : "Unable to complete the captain route.");
       throw completionError;
     }

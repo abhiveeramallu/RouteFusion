@@ -190,6 +190,13 @@ class DashboardResponse(BaseModel):
     recent_activity: list[ActivityItem]
 
 
+class AppSnapshotResponse(BaseModel):
+    dashboard: DashboardResponse
+    recommendation: RecommendationResponse | None
+    rides: list[RideRead]
+    parcels: list[ParcelRead]
+
+
 class DemoLoadResponse(BaseModel):
     driver: DriverRead
     ride: RideRead

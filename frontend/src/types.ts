@@ -155,6 +155,13 @@ export type DashboardData = {
   recent_activity: ActivityItem[];
 };
 
+export type AppSnapshotData = {
+  dashboard: DashboardData;
+  recommendation: Recommendation | null;
+  rides: Ride[];
+  parcels: Parcel[];
+};
+
 export type DemoLoadData = {
   driver: Driver;
   ride: Ride;

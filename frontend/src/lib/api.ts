@@ -1,4 +1,5 @@
 import type {
+  AppSnapshotData,
   AuthResponse,
   CaptainDecision,
   DemoClearData,
@@ -27,7 +28,10 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
   const headers = new Headers(options.headers);
-  headers.set("Content-Type", "application/json");
+  headers.set("Accept", "application/json");
+  if (options.body && !(options.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json");
+  }
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
   }
@@ -104,6 +108,10 @@ export async function clearDemo(token?: string) {
 
 export async function getDashboard(token?: string) {
   return request<DashboardData>("/dashboard", { method: "GET" }, token);
+}
+
+export async function getSnapshot(token?: string) {
+  return request<AppSnapshotData>("/snapshot", { method: "GET" }, token);
 }
 
 export async function getRecommendation(token?: string) {
