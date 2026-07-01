@@ -1,0 +1,49 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: "Inter", sans-serif;
+    color-scheme: light;
+    background: #f8f9fa;
+  }
+
+  body {
+    @apply min-h-screen bg-[#f8f9fa] text-[#111827] antialiased;
+  }
+
+  * {
+    scrollbar-color: rgba(107, 114, 128, 0.45) transparent;
+  }
+
+  ::selection {
+    background: rgba(91, 91, 239, 0.18);
+    color: #111827;
+  }
+
+  body,
+  button,
+  input,
+  select,
+  textarea {
+    font-family: "Inter", sans-serif;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
