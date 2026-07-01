@@ -114,6 +114,19 @@ export async function getSnapshot(token?: string) {
   return request<AppSnapshotData>("/snapshot", { method: "GET" }, token);
 }
 
+export async function pingHealth() {
+  const response = await fetch(`${API_BASE_URL}/health`, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, `Health check failed with status ${response.status}`);
+  }
+}
+
 export async function getRecommendation(token?: string) {
   return request<Recommendation>("/captain/recommendations", { method: "GET" }, token);
 }

@@ -5,7 +5,7 @@
 ### Backend
 
 ```bash
-cd /Users/vabhiram/Documents/routeFusion
+cd routeFusion
 python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 PYTHONPATH=backend .venv/bin/uvicorn app.main:app --reload --port 8000
@@ -14,7 +14,7 @@ PYTHONPATH=backend .venv/bin/uvicorn app.main:app --reload --port 8000
 ### Frontend
 
 ```bash
-cd /Users/vabhiram/Documents/routeFusion/frontend
+cd routeFusion/frontend
 npm install
 npm run dev
 ```

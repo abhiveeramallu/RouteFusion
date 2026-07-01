@@ -7,7 +7,8 @@ import {
   UserCircle2,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
-import routeFusionLogo from "../../routefusion.png";
+import routeFusionLogoPng from "../../routefusion-logo.png";
+import routeFusionLogoWebp from "../../routefusion-logo.webp";
 
 const navItems = [
   { to: "/", label: "Home", icon: Home },
@@ -23,11 +24,18 @@ export function TopNav() {
     <header className="border-b border-[#e7eaee] bg-white/95 backdrop-blur">
       <div className="mx-auto flex max-w-[1600px] flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:px-8">
         <div className="flex items-center">
-          <img
-            src={routeFusionLogo}
-            alt="RouteFusion"
-            className="h-16 w-auto object-contain"
-          />
+          <picture>
+            <source srcSet={routeFusionLogoWebp} type="image/webp" />
+            <img
+              src={routeFusionLogoPng}
+              alt="RouteFusion"
+              width={200}
+              height={133}
+              loading="eager"
+              decoding="async"
+              className="h-16 w-auto object-contain"
+            />
+          </picture>
         </div>
 
         <nav className="flex flex-wrap items-center justify-center gap-2 lg:flex-1 lg:px-4">

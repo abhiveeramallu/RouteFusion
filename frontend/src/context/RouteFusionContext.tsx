@@ -17,6 +17,7 @@ import {
   getSnapshot,
   logoutSession,
   loadDemo,
+  pingHealth,
   respondToRecommendation,
   signIn,
   signUp,
@@ -58,6 +59,7 @@ type RouteFusionContextValue = {
   currentLocation: RoutePoint | null;
   locationStatus: "demo" | "pending" | "available" | "unsupported" | "denied";
   loading: boolean;
+  wakingServer: boolean;
   refreshing: boolean;
   error: string | null;
   bannerMessage: string | null;
@@ -150,6 +152,7 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     "demo",
   );
   const [loading, setLoading] = useState(true);
+  const [wakingServer, setWakingServer] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bannerMessage, setBannerMessage] = useState<string | null>(null);
@@ -402,7 +405,12 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
         setUser(publicUser);
       }
 
+      const wakeupTimer = window.setTimeout(() => {
+        setWakingServer(true);
+      }, 3000);
+
       try {
+        await pingHealth().catch(() => undefined);
         const snapshot = await fetchSnapshot();
         applySnapshot(snapshot);
       } catch (bootstrapError) {
@@ -410,6 +418,8 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
           bootstrapError instanceof Error ? bootstrapError.message : "Unable to load RouteFusion.",
         );
       } finally {
+        window.clearTimeout(wakeupTimer);
+        setWakingServer(false);
         setLoading(false);
       }
     }
@@ -430,6 +440,7 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
         currentLocation,
         locationStatus,
         loading,
+        wakingServer,
         refreshing,
         error,
         bannerMessage,

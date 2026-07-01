@@ -2,6 +2,8 @@
 
 RouteFusion is a demo-first MVP that shows how a captain can combine a passenger ride and a parcel delivery into one optimized trip. The latest UI direction uses an Uber-inspired persistent map layout with a shared left-side booking hub for ride requests, parcel requests, and captain decisions.
 
+By default, RouteFusion now runs in transient in-memory mode so every fresh server start begins from zero rides, zero parcels, and zero captain earnings without depending on an external database.
+
 ## Architecture
 
 RouteFusion uses a lightweight monorepo split into a React frontend and a FastAPI backend:
@@ -66,7 +68,7 @@ routeFusion/
 
 ## Database Schema
 
-The canonical SQL schema lives in [backend/schema.sql](/Users/vabhiram/Documents/routeFusion/backend/schema.sql). The core tables are:
+The canonical SQL schema lives in [backend/schema.sql](backend/schema.sql). The core tables are:
 
 - `users`: authentication identity for platform users and operators.
 - `drivers`: captain profile and current location.
@@ -114,14 +116,15 @@ The canonical SQL schema lives in [backend/schema.sql](/Users/vabhiram/Documents
 
 ## UI Wireframes
 
-The visual wireframes live in [docs/ui-wireframes.md](/Users/vabhiram/Documents/routeFusion/docs/ui-wireframes.md). They outline the startup-style layout, navigation, form pages, captain view, live map, and dashboard composition before implementation.
+The visual wireframes live in [docs/ui-wireframes.md](docs/ui-wireframes.md). They outline the startup-style layout, navigation, form pages, captain view, live map, and dashboard composition before implementation.
 
-The component tree and persistent split-layout architecture live in [docs/architecture.md](/Users/vabhiram/Documents/routeFusion/docs/architecture.md). Deployment notes live in [docs/deployment-guide.md](/Users/vabhiram/Documents/routeFusion/docs/deployment-guide.md).
+The component tree and persistent split-layout architecture live in [docs/architecture.md](docs/architecture.md). Deployment notes live in [docs/deployment-guide.md](docs/deployment-guide.md).
 
 ## Assumptions
 
 - Google Maps support is implemented with a graceful fallback visualization when no browser API key is present locally.
-- PostgreSQL is the target deployment database, but SQLite is allowed locally so the demo can run without standing up infrastructure first.
+- Transient in-memory mode is the default so the demo stays fast and starts clean on every fresh boot.
+- PostgreSQL is optional and should only be enabled when you explicitly want persistent storage.
 - Demo mode is the default happy path and is preloaded with VIT Vellore, CMC Hospital, Katpadi Railway Station, and Gandhi Nagar sample data.
 
 ## Local Run
@@ -129,7 +132,7 @@ The component tree and persistent split-layout architecture live in [docs/archit
 ### Backend
 
 ```bash
-cd /Users/vabhiram/Documents/routeFusion
+cd routeFusion
 python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 PYTHONPATH=backend .venv/bin/uvicorn app.main:app --reload --port 8000
@@ -144,7 +147,7 @@ For backend verification helpers, install the dev extras:
 ### Frontend
 
 ```bash
-cd /Users/vabhiram/Documents/routeFusion/frontend
+cd routeFusion/frontend
 npm install
 npm run dev
 ```
@@ -153,3 +156,9 @@ Optional browser environment variables:
 
 - `VITE_API_BASE_URL` defaults to `http://127.0.0.1:8000`
 - `VITE_GOOGLE_MAPS_API_KEY` enables the live Google Maps renderer instead of the built-in fallback map. The Google Cloud key should have `Maps JavaScript API`, `Places API`, and `Directions API` enabled for road-snapped routes.
+
+## Security Note
+
+- Keep `.env` out of version control.
+- Rotate any database password or API keys before making the repo public or handing it off.
+- If you re-enable PostgreSQL, prefer Supabase's pooler connection and URL-encode special characters in the password.

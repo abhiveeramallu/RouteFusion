@@ -24,8 +24,8 @@ if not settings.database_url.startswith("sqlite"):
     engine_kwargs.update(
         pool_pre_ping=True,
         pool_recycle=300,
-        pool_size=5,
-        max_overflow=10,
+        pool_size=3,
+        max_overflow=5,
     )
 elif settings.transient_mode:
     # A single shared in-memory connection keeps transient demo state fast

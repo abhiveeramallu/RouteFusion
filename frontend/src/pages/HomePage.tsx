@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { NavLink } from "react-router-dom";
-import mainImage from "../../mainimage.png";
+import mainImagePng from "../../mainimage-hero.png";
+import mainImageWebp from "../../mainimage-hero.webp";
 
 
 /* ─── colour palette ─── */
@@ -187,18 +188,26 @@ function HeroIllustration() {
         overflow: "hidden",
       }}
     >
-      <img
-        src={mainImage}
-        alt="RouteFusion hero illustration"
-        style={{
-          width: "100%",
-          height: "100%",
-          minHeight: 360,
-          display: "block",
-          objectFit: "cover",
-          objectPosition: "center",
-        }}
-      />
+      <picture>
+        <source srcSet={mainImageWebp} type="image/webp" />
+        <img
+          src={mainImagePng}
+          alt="RouteFusion hero illustration"
+          loading="lazy"
+          decoding="async"
+          width={1440}
+          height={960}
+          sizes="(min-width: 1280px) 720px, (min-width: 768px) 50vw, 100vw"
+          style={{
+            width: "100%",
+            height: "100%",
+            minHeight: 360,
+            display: "block",
+            objectFit: "cover",
+            objectPosition: "center",
+          }}
+        />
+      </picture>
       <div
         style={{
           position: "absolute",

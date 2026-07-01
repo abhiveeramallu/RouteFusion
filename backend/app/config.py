@@ -60,7 +60,7 @@ class Settings:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     origins = os.getenv("CORS_ORIGINS", "http://localhost:5173")
-    transient_mode = _env_flag("ROUTEFUSION_TRANSIENT_MODE", False)
+    transient_mode = _env_flag("ROUTEFUSION_TRANSIENT_MODE", True)
     return Settings(
         app_name="RouteFusion",
         transient_mode=transient_mode,
