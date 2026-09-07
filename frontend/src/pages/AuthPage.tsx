@@ -1,5 +1,5 @@
-import { Navigate } from "react-router-dom";
+import { AuthPanel } from "../components/AuthPanel";
 
 export function AuthPage() {
-  return <Navigate to="/" replace />;
+  return <AuthPanel />;
 }

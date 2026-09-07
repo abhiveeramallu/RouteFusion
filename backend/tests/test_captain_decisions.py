@@ -63,7 +63,32 @@ def test_captain_can_accept_combined_or_individual_routes(
     assert dashboard_response.json()["metrics"]["total_combined_trips"] == expected_combined_trips
 
 
-def test_rejected_pair_drops_out_of_the_recommendation_queue(client: TestClient) -> None:
+def test_declining_a_bundle_for_a_solo_ride_records_solo_metrics_not_the_bundle_score(
+    client: TestClient,
+) -> None:
+    # Regression test: choosing accept_ride/accept_parcel on a "pending"
+    # bundle recommendation used to persist the SCORED BUNDLE's
+    # efficiency_score/extra_distance/etc. onto the RouteDecision row, even
+    # though the actual accepted outcome was a solo trip with none of that
+    # detour. The demo scenario's ride+parcel bundle scores well under 100%
+    # efficiency (real detour involved), so a solo accept must not inherit it.
+    assert client.get("/demo/load").status_code == 200
+
+    decision_response = client.post(
+        "/captain/recommendations/respond",
+        json={"decision": "accept_ride"},
+    )
+    assert decision_response.status_code == 200, decision_response.text
+    decision = decision_response.json()["decision"]
+
+    assert decision is not None
+    assert decision["efficiency_score"] == 100.0
+    assert decision["extra_distance"] == 0.0
+    assert decision["extra_time"] == 0.0
+    assert decision["overlap_distance"] == 0.0
+
+
+def test_rejected_pair_is_not_reoffered_but_solo_ride_still_is(client: TestClient) -> None:
     assert client.get("/demo/load").status_code == 200
 
     decision_response = client.post(
@@ -72,8 +97,15 @@ def test_rejected_pair_drops_out_of_the_recommendation_queue(client: TestClient)
     )
     assert decision_response.status_code == 200, decision_response.text
 
+    # The rejected ride+parcel combination must never be re-offered together,
+    # but the assignment engine still finds the driver a solo ride from the
+    # same pool — a real improvement over the old picker, which had no solo
+    # fallback once both a ride and a parcel existed.
     recommendation_response = client.get("/captain/recommendations")
-    assert recommendation_response.status_code == 404, recommendation_response.text
+    assert recommendation_response.status_code == 200, recommendation_response.text
+    recommendation = recommendation_response.json()
+    assert recommendation["decision_mode"] == "ride_only"
+    assert recommendation["parcel"] is None
 
 
 def test_captain_can_accept_a_ride_without_waiting_for_a_parcel(client: TestClient) -> None:
@@ -194,7 +226,11 @@ def test_completing_an_active_route_releases_the_captain_and_surfaces_the_next_q
 
     assert next_recommendation["route_confirmed"] is False
     assert next_recommendation["decision_mode"] == "ride_only"
-    assert next_recommendation["ride"]["pickup_name"] == "VIT Vellore"
+    # The assignment engine picks the nearest ride to the driver first (VIT
+    # Vellore, ~0 distance from the demo driver's spawn point), so that ride
+    # is the one accepted+completed here, leaving Katpadi as the only
+    # remaining open ride for the next recommendation.
+    assert next_recommendation["ride"]["pickup_name"] == "Katpadi Railway Station"
     assert next_recommendation["ride"]["status"] == "open"
 
 
@@ -224,7 +260,9 @@ def test_rejecting_a_solo_ride_advances_to_the_next_ride_in_queue(client: TestCl
     initial_recommendation_response = client.get("/captain/recommendations")
     assert initial_recommendation_response.status_code == 200, initial_recommendation_response.text
     initial_recommendation = initial_recommendation_response.json()
-    assert initial_recommendation["ride"]["pickup_name"] == "Katpadi Railway Station"
+    # Nearest ride to the demo driver wins (VIT Vellore), not "most recently
+    # created" as the old recency-ordered picker used to return.
+    assert initial_recommendation["ride"]["pickup_name"] == "VIT Vellore"
 
     reject_response = client.post(
         "/captain/recommendations/respond",
@@ -237,5 +275,7 @@ def test_rejecting_a_solo_ride_advances_to_the_next_ride_in_queue(client: TestCl
     assert next_recommendation_response.status_code == 200, next_recommendation_response.text
     next_recommendation = next_recommendation_response.json()
 
-    assert next_recommendation["ride"]["pickup_name"] == "VIT Vellore"
+    # VIT Vellore (the nearest, first-recommended ride) was just rejected and
+    # is now terminal, so Katpadi is the only remaining open ride.
+    assert next_recommendation["ride"]["pickup_name"] == "Katpadi Railway Station"
     assert next_recommendation["ride"]["status"] == "open"

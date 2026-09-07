@@ -2,6 +2,8 @@ import type {
   AppSnapshotData,
   AuthResponse,
   CaptainDecision,
+  ConcurrencyStressData,
+  ConcurrencyStressRequest,
   DemoClearData,
   DashboardData,
   DemoLoadData,
@@ -11,6 +13,8 @@ import type {
   Recommendation,
   Ride,
   RideFormValues,
+  SeedFleetData,
+  SeedFleetRequest,
   SignupFormValues,
 } from "../types";
 
@@ -197,6 +201,28 @@ export async function completeCaptainRecommendation(token?: string) {
     "/captain/recommendations/complete",
     {
       method: "POST",
+    },
+    token,
+  );
+}
+
+export async function seedFleet(payload: SeedFleetRequest, token?: string) {
+  return request<SeedFleetData>(
+    "/demo/seed-fleet",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+    token,
+  );
+}
+
+export async function runConcurrencyStressTest(payload: ConcurrencyStressRequest, token?: string) {
+  return request<ConcurrencyStressData>(
+    "/demo/stress/concurrency",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
     },
     token,
   );

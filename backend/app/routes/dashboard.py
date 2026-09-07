@@ -7,9 +7,18 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Driver, Parcel, Ride, RouteDecision
+from app.dependencies import get_current_user_optional
+from app.models import ConcurrencyEvent, Driver, Parcel, Ride, RouteDecision, User
 from app.routes.captain import build_recommendation
-from app.schemas import ActivityItem, AppSnapshotResponse, DashboardMetrics, DashboardResponse
+from app.schemas import (
+    ActivityItem,
+    AppSnapshotResponse,
+    AssignmentEngineStats,
+    ConcurrencyStats,
+    DashboardMetrics,
+    DashboardResponse,
+)
+from app.services.assignment_engine import AssignmentResult, run_assignment
 from app.services.pricing import (
     estimate_customer_pricing,
     estimate_parcel_base_price,
@@ -125,9 +134,9 @@ def build_captain_summary(
     )
 
 
-@router.get("/dashboard", response_model=DashboardResponse)
-def get_dashboard(
-    db: Session = Depends(get_db),
+def build_dashboard_response(
+    db: Session,
+    engine_result: AssignmentResult | None = None,
 ) -> DashboardResponse:
     total_rides = db.scalar(select(func.count()).select_from(Ride)) or 0
     total_parcels = db.scalar(select(func.count()).select_from(Parcel)) or 0
@@ -211,6 +220,22 @@ def get_dashboard(
     ]
     activities = sorted(chain(activities), key=lambda item: item.timestamp, reverse=True)[:10]
 
+    if engine_result is None:
+        engine_result = run_assignment(db)
+    stats = engine_result.stats
+
+    concurrency_events = list(
+        db.scalars(select(ConcurrencyEvent).order_by(desc(ConcurrencyEvent.created_at)))
+    )
+    conflicts_prevented = sum(event.conflicts for event in concurrency_events)
+    last_event = concurrency_events[0] if concurrency_events else None
+    last_event_summary = (
+        f"Ride #{last_event.ride_id} + Parcel #{last_event.parcel_id}: "
+        f"{last_event.succeeded} succeeded, {last_event.conflicts} conflicted"
+        if last_event is not None
+        else None
+    )
+
     return DashboardResponse(
         metrics=DashboardMetrics(
             total_rides=total_rides,
@@ -225,16 +250,50 @@ def get_dashboard(
             captain_combined_trips=captain_combined_trips,
         ),
         recent_activity=activities,
+        assignment_engine=AssignmentEngineStats(
+            drivers_considered=stats.drivers_considered,
+            rides_considered=stats.rides_considered,
+            parcels_considered=stats.parcels_considered,
+            stage1_pairs_evaluated=stats.stage1_pairs_evaluated,
+            stage1_pairs_after_pruning=stats.stage1_pairs_after_pruning,
+            stage2_pairs_evaluated=stats.stage2_pairs_evaluated,
+            stage2_pairs_after_pruning=stats.stage2_pairs_after_pruning,
+            solve_time_ms=stats.solve_time_ms,
+            optimal_cost=stats.optimal_cost,
+            greedy_cost=stats.greedy_cost,
+            improvement_pct=stats.improvement_pct,
+            optimal_matched_count=stats.optimal_matched_count,
+            greedy_matched_count=stats.greedy_matched_count,
+        ),
+        concurrency=ConcurrencyStats(
+            conflicts_prevented=conflicts_prevented,
+            stress_tests_run=len(concurrency_events),
+            last_event_summary=last_event_summary,
+        ),
     )
+
+
+@router.get("/dashboard", response_model=DashboardResponse)
+def get_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
+    return build_dashboard_response(db)
 
 
 @router.get("/snapshot", response_model=AppSnapshotResponse)
 def get_snapshot(
     db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> AppSnapshotResponse:
+    # Computed once and threaded through both calls below — build_recommendation
+    # and build_dashboard_response each independently need the fleet-wide
+    # assignment solve, and re-running the full two-stage Hungarian pipeline
+    # twice for the same, unchanged DB state on every /snapshot call (the
+    # single call the frontend makes on nearly every action) would double
+    # its cost for no benefit.
+    engine_result = run_assignment(db)
+
     recommendation = None
     try:
-        recommendation = build_recommendation(db)
+        recommendation = build_recommendation(db, current_user, engine_result)
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
@@ -243,7 +302,7 @@ def get_snapshot(
     parcels = list(db.scalars(select(Parcel).order_by(desc(Parcel.created_at))))
 
     return AppSnapshotResponse(
-        dashboard=get_dashboard(db),
+        dashboard=build_dashboard_response(db, engine_result),
         recommendation=recommendation,
         rides=rides,
         parcels=parcels,

@@ -56,6 +56,8 @@ class Ride(Base):
     passenger_count: Mapped[int] = mapped_column(Integer)
     ride_type: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(50), default="open", index=True)
+    version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    assigned_driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     created_by_user = relationship("User", back_populates="rides")
@@ -77,6 +79,8 @@ class Parcel(Base):
     parcel_type: Mapped[str] = mapped_column(String(100))
     priority: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(50), default="open", index=True)
+    version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    assigned_driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     created_by_user = relationship("User", back_populates="parcels")
@@ -104,6 +108,19 @@ class RouteDecision(Base):
     driver = relationship("Driver", back_populates="route_decisions")
     ride = relationship("Ride", back_populates="route_decisions")
     parcel = relationship("Parcel", back_populates="route_decisions")
+
+
+class ConcurrencyEvent(Base):
+    __tablename__ = "concurrency_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ride_id: Mapped[int] = mapped_column(ForeignKey("rides.id"))
+    parcel_id: Mapped[int] = mapped_column(ForeignKey("parcels.id"))
+    attempts: Mapped[int] = mapped_column(Integer)
+    succeeded: Mapped[int] = mapped_column(Integer)
+    conflicts: Mapped[int] = mapped_column(Integer)
+    winner_driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 class RefreshToken(Base):

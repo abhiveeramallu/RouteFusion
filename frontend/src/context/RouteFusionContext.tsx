@@ -19,6 +19,8 @@ import {
   loadDemo,
   pingHealth,
   respondToRecommendation,
+  runConcurrencyStressTest,
+  seedFleet,
   signIn,
   signUp,
 } from "../lib/api";
@@ -26,6 +28,7 @@ import { defaultVelloreLocation } from "../lib/constants";
 import type {
   AuthResponse,
   CaptainDecision,
+  ConcurrencyStressData,
   DashboardData,
   LoginFormValues,
   MapScenario,
@@ -35,6 +38,7 @@ import type {
   Ride,
   RideFormValues,
   RoutePoint,
+  SeedFleetData,
   SignupFormValues,
   UserSession,
 } from "../types";
@@ -76,6 +80,8 @@ type RouteFusionContextValue = {
   cancelParcelRequest: (parcelId: number) => Promise<void>;
   respondToCaptainDecision: (decision: CaptainDecision) => Promise<void>;
   completeCaptainRoute: () => Promise<void>;
+  seedDemoFleet: (captains: number, rides: number, parcels: number) => Promise<SeedFleetData>;
+  runStressTest: (rideId: number, parcelId: number, attempts: number) => Promise<ConcurrencyStressData>;
   setMapScenario: (scenario: MapScenario | null) => void;
   clearBanner: () => void;
   clearLocationToast: () => void;
@@ -135,8 +141,8 @@ function writeStoredSession(session: AuthResponse | null) {
   }
 }
 
-async function fetchSnapshot() {
-  return getSnapshot();
+async function fetchSnapshot(token?: string | null) {
+  return getSnapshot(token ?? undefined);
 }
 
 export function RouteFusionProvider({ children }: { children: ReactNode }) {
@@ -197,7 +203,7 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     setRefreshing(true);
     setError(null);
     try {
-      const snapshot = await fetchSnapshot();
+      const snapshot = await fetchSnapshot(token);
       applySnapshot(snapshot, currentLocation);
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : "Unable to refresh RouteFusion.");
@@ -213,7 +219,7 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     try {
       const result = await loadDemo();
       setBannerMessage(result.message);
-      const snapshot = await fetchSnapshot();
+      const snapshot = await fetchSnapshot(token);
       applySnapshot(snapshot);
     } catch (demoError) {
       setError(demoError instanceof Error ? demoError.message : "Unable to load demo mode.");
@@ -229,7 +235,7 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     try {
       const session = await signIn(payload);
       applySession(session);
-      const snapshot = await fetchSnapshot();
+      const snapshot = await fetchSnapshot(session.access_token);
       applySnapshot(snapshot);
       setBannerMessage(`Signed in as ${session.user.full_name}.`);
       return session.user;
@@ -248,7 +254,7 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     try {
       const session = await signUp(payload);
       applySession(session);
-      const snapshot = await fetchSnapshot();
+      const snapshot = await fetchSnapshot(session.access_token);
       applySnapshot(snapshot);
       setBannerMessage(`Account created for ${session.user.full_name}.`);
       return session.user;
@@ -331,12 +337,16 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
   async function respondToCaptainDecision(decision: CaptainDecision) {
     setError(null);
     try {
-      const response = await respondToRecommendation(decision);
+      const response = await respondToRecommendation(decision, token ?? undefined);
       setBannerMessage(response.message);
       await refreshAll();
     } catch (decisionError) {
-      if (decisionError instanceof ApiError && decisionError.status === 404) {
-        setBannerMessage("Recommendation already changed. RouteFusion refreshed the queue.");
+      if (decisionError instanceof ApiError && (decisionError.status === 404 || decisionError.status === 409)) {
+        setBannerMessage(
+          decisionError.status === 409
+            ? "Another captain just took this request. RouteFusion refreshed the queue."
+            : "Recommendation already changed. RouteFusion refreshed the queue.",
+        );
         await refreshAll();
         return;
       }
@@ -352,9 +362,9 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
       if (completedLocation) {
         setCurrentLocation(completedLocation);
       }
-      const response = await completeCaptainRecommendation();
+      const response = await completeCaptainRecommendation(token ?? undefined);
       setBannerMessage(response.message);
-      const snapshot = await fetchSnapshot();
+      const snapshot = await fetchSnapshot(token);
       applySnapshot(snapshot, completedLocation ?? currentLocation);
     } catch (completionError) {
       if (completionError instanceof ApiError && completionError.status === 404) {
@@ -367,13 +377,39 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function seedDemoFleet(captains: number, rides: number, parcels: number) {
+    setError(null);
+    try {
+      const result = await seedFleet({ captains, rides, parcels }, token ?? undefined);
+      setBannerMessage(result.message);
+      await refreshAll();
+      return result;
+    } catch (seedError) {
+      setError(seedError instanceof Error ? seedError.message : "Unable to seed the demo fleet.");
+      throw seedError;
+    }
+  }
+
+  async function runStressTest(rideId: number, parcelId: number, attempts: number) {
+    setError(null);
+    try {
+      const result = await runConcurrencyStressTest({ ride_id: rideId, parcel_id: parcelId, attempts }, token ?? undefined);
+      setBannerMessage(result.message);
+      await refreshAll();
+      return result;
+    } catch (stressError) {
+      setError(stressError instanceof Error ? stressError.message : "Unable to run the concurrency stress test.");
+      throw stressError;
+    }
+  }
+
   async function clearRequests() {
     setRefreshing(true);
     setError(null);
     try {
       const response = await clearDemo();
       setBannerMessage(response.message);
-      const snapshot = await fetchSnapshot().catch(() => ({
+      const snapshot = await fetchSnapshot(token).catch(() => ({
         dashboard: null,
         recommendation: null,
         rides: [],
@@ -411,7 +447,7 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
 
       try {
         await pingHealth().catch(() => undefined);
-        const snapshot = await fetchSnapshot();
+        const snapshot = await fetchSnapshot(storedSession?.access_token);
         applySnapshot(snapshot);
       } catch (bootstrapError) {
         setError(
@@ -457,6 +493,8 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
         cancelParcelRequest,
         respondToCaptainDecision,
         completeCaptainRoute,
+        seedDemoFleet,
+        runStressTest,
         clearRequests,
         setMapScenario,
         clearBanner,

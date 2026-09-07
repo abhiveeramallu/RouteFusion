@@ -27,7 +27,7 @@ RouteFusion uses a lightweight monorepo split into a React frontend and a FastAP
 - Demo-first, not enterprise-first.
 - PostgreSQL-ready persistence with a local SQLite fallback for frictionless local development.
 - JWT authentication kept intentionally small with a demo login path.
-- Recommendation logic favors explainability over overly complex optimization.
+- Matching runs on a real optimal-assignment algorithm (see [System Design](#system-design) below), not a heuristic score — while the per-pair route scoring shown to a captain stays deliberately simple and explainable.
 - UI prioritizes clarity, motion, and presentation quality.
 
 ## Proposed Folder Structure
@@ -100,19 +100,48 @@ The canonical SQL schema lives in [backend/schema.sql](backend/schema.sql). The 
 ### Captain Recommendations
 
 - `GET /captain/recommendations`
-  - Returns the latest driver, nearby requests, route metrics, route sequences, and optimizer recommendation.
+  - Returns the *calling captain's own* driver, assigned request(s), route metrics, route sequences, and optimizer recommendation. Anonymous/public requests (no bearer token) fall back to the shared demo driver, matching the original single-captain demo flow.
 - `POST /captain/recommendations/respond`
-  - Records an accept or reject decision for the recommended combined trip.
+  - Records an accept or reject decision. Accept decisions go through optimistic-locking (`app/services/concurrency.py`); a request already claimed by another captain returns `409 Conflict` instead of silently overwriting it.
+- `POST /captain/recommendations/complete`
+  - Closes out the calling captain's active route and returns them to the pool.
 
 ### Dashboard
 
 - `GET /dashboard`
-  - Returns high-level metrics and recent activity.
+  - Returns high-level metrics, recent activity, live assignment-engine stats (candidates evaluated/pruned, solve time, optimal-vs-greedy comparison), and concurrency-guard stats (conflicts prevented, last stress-test result).
 
 ### Demo
 
 - `GET /demo/load`
-  - Seeds the demo ride, parcel, and captain records and returns the initialized scenario.
+  - Seeds the single demo ride, parcel, and captain scenario.
+- `POST /demo/seed-fleet`
+  - Creates several real captain accounts (not fake rows — full `User` + `Driver` records you can log into) plus scattered ride/parcel requests, so the assignment engine has an actual multi-driver pool to solve over.
+- `POST /demo/stress/concurrency`
+  - Fires several simultaneous accept attempts at the same ride+parcel pair through the real accept code path, to demonstrate the concurrency guard on demand.
+
+## System Design
+
+RouteFusion's captain matching is a real assignment-problem pipeline, not a per-driver heuristic score. The full implementation lives in `backend/app/services/`.
+
+### The problem
+
+Matching drivers to rides and parcels is a **3-dimensional assignment problem** (driver × ride × parcel), which is NP-hard in general. Rather than brute-forcing it, RouteFusion decomposes it into two sequential **2-dimensional assignment problems**, each solved optimally:
+
+- **Stage 1 — drivers × open rides.** Cost = haversine distance from a driver's current location to each ride's pickup. Solved with a from-scratch Kuhn-Munkres (Hungarian) implementation (`hungarian.py`), O(n³) on the reduced candidate matrix.
+- **Stage 2 — (driver, assigned ride) × open parcels.** Cost = the cheapest extra distance of bundling that parcel onto the driver's already-assigned ride, minimized over all 6 valid stop orderings that respect each job's own pickup-before-drop constraint (`route_optimizer.enumerate_valid_orderings` / `best_combined_extra_distance`). Solved with the same Hungarian function.
+
+This decomposition is optimal *within* each stage but not guaranteed globally optimal across both stages — an explicit, documented trade-off in exchange for tractability. It also means Hungarian's augmenting-path search can match **more drivers** than a naive greedy pass would (greedy never revisits an earlier choice that turns out to block a later match), which is why the dashboard's "optimal vs greedy" comparison only claims a distance improvement when both matched the same number of pairs — otherwise it reports the actual win: more drivers matched.
+
+### Pruning
+
+Before either stage builds its cost matrix, candidates are pruned with a uniform spatial grid (`spatial_grid.py`) — the same bucketing principle behind geohash/H3, simplified to a fixed-size grid with a 3×3 neighbor-cell lookup. This keeps the cost matrix small at scale. If a cell's local neighborhood is empty, pruning falls back to the full candidate set for that driver/ride rather than reporting no match — pruning is only ever a performance optimization, never a correctness risk.
+
+### Concurrency
+
+Two captains can be shown overlapping recommendations and both try to accept at once. `services/concurrency.py` claims a ride/parcel with a conditional `UPDATE ... WHERE status='open' AND version=<snapshot>` — an optimistic-locking pattern that only needs an atomic conditional update, not `SELECT ... FOR UPDATE`, so it works identically on the app's default transient SQLite store and on Postgres. Zero rows affected means someone else claimed it first; the caller gets a `409` instead of silently double-booking the request. The `/demo/stress/concurrency` endpoint proves this on demand by firing N simultaneous accept attempts at the same pair through this exact code path.
+
+One caveat specific to the default transient mode: it backs every request with a single shared in-memory SQLite connection (`StaticPool`), and the `sqlite3` driver isn't safe for truly concurrent access from multiple threads at once. The stress-test endpoint serializes the DB round-trip of each simulated attempt through a lock for that reason (`SQLITE_SINGLE_WRITER_LOCK`) — the optimistic-locking version check is still what decides the one winner; the lock only protects the driver itself from corrupting a shared connection. Real concurrent Postgres connections wouldn't need it.
 
 ## UI Wireframes
 

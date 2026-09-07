@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, inspect, text
@@ -37,6 +38,20 @@ elif settings.transient_mode:
 engine = create_engine(settings.database_url, **engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
+# sqlite3 connections (even file-based ones opened with check_same_thread=
+# False, and especially the single shared StaticPool connection used in
+# transient mode) aren't safe for genuinely concurrent access from multiple
+# threads at once — unlike Postgres, which handles real concurrent
+# connections natively. FastAPI dispatches sync `def` route handlers via a
+# thread pool, so two real concurrent HTTP requests already run on separate
+# threads today; without this, they can corrupt each other's queries against
+# the same physical sqlite connection. This lives at the session layer
+# (get_db, below) rather than as a lock sprinkled into individual routes, so
+# every request is protected by construction instead of by a caller
+# remembering to opt in.
+SQLITE_SINGLE_WRITER_LOCK = threading.Lock()
+_SERIALIZE_SQLITE_SESSIONS = settings.database_url.startswith("sqlite")
+
 
 def synchronize_legacy_schema() -> None:
     if not settings.database_url.startswith("sqlite"):
@@ -60,10 +75,32 @@ def synchronize_legacy_schema() -> None:
             if "created_by_user_id" not in parcel_columns:
                 connection.execute(text("ALTER TABLE parcels ADD COLUMN created_by_user_id INTEGER"))
 
+        if inspector.has_table("rides"):
+            ride_columns = {column["name"] for column in inspector.get_columns("rides")}
+            if "version" not in ride_columns:
+                connection.execute(text("ALTER TABLE rides ADD COLUMN version INTEGER NOT NULL DEFAULT 0"))
+            if "assigned_driver_id" not in ride_columns:
+                connection.execute(text("ALTER TABLE rides ADD COLUMN assigned_driver_id INTEGER"))
+
+        if inspector.has_table("parcels"):
+            parcel_columns = {column["name"] for column in inspector.get_columns("parcels")}
+            if "version" not in parcel_columns:
+                connection.execute(text("ALTER TABLE parcels ADD COLUMN version INTEGER NOT NULL DEFAULT 0"))
+            if "assigned_driver_id" not in parcel_columns:
+                connection.execute(text("ALTER TABLE parcels ADD COLUMN assigned_driver_id INTEGER"))
+
 
 def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    if _SERIALIZE_SQLITE_SESSIONS:
+        with SQLITE_SINGLE_WRITER_LOCK:
+            db = SessionLocal()
+            try:
+                yield db
+            finally:
+                db.close()
+    else:
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()

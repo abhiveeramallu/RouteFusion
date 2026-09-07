@@ -169,6 +169,129 @@ function captainGuideReason(recommendation: Recommendation) {
   return "AI is evaluating the best order for the current demand.";
 }
 
+function acceptBothConstraintUnit(constraintKey: string) {
+  if (constraintKey === "extra_time") {
+    return " min";
+  }
+  if (constraintKey === "passenger_delay") {
+    return " km";
+  }
+  return "";
+}
+
+function acceptBothExplanationCopy(recommendationLabel: string) {
+  if (recommendationLabel === "REJECT COMBINATION") {
+    return "The combined route was rejected — none of the accept-both, passenger-first, or parcel-first options cleared the bar, so both requests stay open.";
+  }
+  return "Parcel was not combined because the ACCEPT BOTH constraints were not satisfied.";
+}
+
+function AcceptBothAnalysisCard({ recommendation }: { recommendation: Recommendation }) {
+  const analysis = recommendation.accept_both_analysis;
+  if (!analysis) {
+    return null;
+  }
+
+  const isAcceptBoth = recommendation.recommendation === "ACCEPT BOTH";
+  const isRejected = recommendation.recommendation === "REJECT COMBINATION";
+
+  const metrics: Array<{ label: string; value: string }> = [
+    { label: "Passenger baseline", value: `${analysis.passenger_baseline_distance} km` },
+    { label: "Combined route", value: `${analysis.combined_route_distance} km` },
+    { label: "Extra distance", value: `${analysis.extra_distance} km` },
+    { label: "Extra travel time", value: `${analysis.extra_time} min` },
+    { label: "Passenger delay", value: `${analysis.passenger_delay} km` },
+    { label: "Overlap distance", value: `${analysis.overlap_distance} km` },
+    { label: "Efficiency score", value: `${analysis.efficiency_score} / 100` },
+  ];
+
+  return (
+    <div
+      className={`rounded-[24px] border p-4 shadow-[0_12px_28px_rgba(15,23,42,0.06)] ${
+        isAcceptBoth
+          ? "border-[#bbf7d0] bg-[#f0fdf4]"
+          : isRejected
+            ? "border-[#fecaca] bg-[#fef2f2]"
+            : "border-[#e7e9f6] bg-[#fafaff]"
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <ShieldCheck
+            className={`h-4 w-4 ${isAcceptBoth ? "text-[#15803d]" : isRejected ? "text-[#dc2626]" : "text-[#5B5BEF]"}`}
+          />
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#4b5563]">
+            {isAcceptBoth ? "Why Accept Both?" : "Why not Accept Both?"}
+          </p>
+        </div>
+        <span
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${
+            isAcceptBoth ? "bg-[#15803d] text-white" : isRejected ? "bg-[#dc2626] text-white" : "bg-[#111111] text-white"
+          }`}
+        >
+          {recommendation.recommendation}
+        </span>
+      </div>
+
+      {!isAcceptBoth ? (
+        <p className="mt-3 text-sm leading-6 text-[#4b5563]">{acceptBothExplanationCopy(recommendation.recommendation)}</p>
+      ) : null}
+
+      <div className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-2">
+        {analysis.route_sequence.map((point, index) => (
+          <div key={`${point.name}-${index}`} className="flex items-center gap-2">
+            <span
+              className={`break-words rounded-full px-3 py-1.5 text-xs font-semibold ${
+                isAcceptBoth ? "bg-[#111111] text-white" : "bg-white text-[#4b5563]"
+              }`}
+            >
+              {point.name}
+            </span>
+            {index < analysis.route_sequence.length - 1 ? <ArrowRight className="h-3.5 w-3.5 shrink-0 text-[#9ca3af]" /> : null}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {metrics.map((metric) => (
+          <div key={metric.label} className="rounded-2xl bg-white px-3 py-2 shadow-[0_6px_16px_rgba(15,23,42,0.04)]">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#9ca3af]">{metric.label}</p>
+            <p className="mt-1 break-words text-sm font-semibold text-[#111827]">{metric.value}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 space-y-2">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#6b7280]">Constraints</p>
+        {analysis.constraints.map((constraint) => (
+          <div key={constraint.key} className="flex items-center gap-2 text-sm">
+            {constraint.passed ? (
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-[#15803d]" />
+            ) : (
+              <XCircle className="h-4 w-4 shrink-0 text-[#dc2626]" />
+            )}
+            <span className={`break-words ${constraint.passed ? "text-[#111827]" : "text-[#dc2626]"}`}>
+              {constraint.label} {constraint.actual}
+              {acceptBothConstraintUnit(constraint.key)} {constraint.comparison === "gte" ? ">=" : "<="}{" "}
+              {constraint.threshold}
+              {acceptBothConstraintUnit(constraint.key)}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div
+        className={`mt-4 inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold ${
+          isAcceptBoth ? "bg-[#15803d] text-white" : "bg-white text-[#4b5563]"
+        }`}
+      >
+        {isAcceptBoth ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />}
+        {recommendation.recommendation}
+      </div>
+    </div>
+  );
+}
+
 function hasRideRequest(recommendation: Recommendation) {
   return recommendation.ride !== null;
 }
@@ -1045,6 +1168,10 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
                       </div>
                     ) : null}
                   </div>
+                ) : null}
+
+                {recommendation.accept_both_analysis ? (
+                  <AcceptBothAnalysisCard recommendation={recommendation} />
                 ) : null}
 
                 <div className="flex flex-wrap gap-3">

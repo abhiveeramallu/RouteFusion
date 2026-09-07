@@ -132,6 +132,28 @@ class RouteDecisionRead(BaseModel):
     created_at: datetime
 
 
+class AcceptBothConstraint(BaseModel):
+    key: str
+    label: str
+    actual: float
+    threshold: float
+    comparison: Literal["gte", "lte"]
+    passed: bool
+
+
+class AcceptBothAnalysis(BaseModel):
+    passenger_baseline_distance: float
+    combined_route_distance: float
+    extra_distance: float
+    extra_time: float
+    passenger_delay: float
+    overlap_distance: float
+    efficiency_score: float
+    route_sequence: list[LocationPoint]
+    constraints: list[AcceptBothConstraint]
+    all_constraints_passed: bool
+
+
 class RecommendationResponse(BaseModel):
     driver: DriverRead
     ride: RideRead | None
@@ -152,6 +174,10 @@ class RecommendationResponse(BaseModel):
     parcel_route: list[LocationPoint]
     optimized_route: list[LocationPoint]
     recent_decision: RouteDecisionRead | None = None
+    # Only present when a ride+parcel bundle was actually evaluated (i.e. not
+    # for ride_only/parcel_only decision modes) — explains why ACCEPT BOTH
+    # was or wasn't chosen, using the backend's own computed numbers.
+    accept_both_analysis: AcceptBothAnalysis | None = None
 
 
 class RecommendationAction(BaseModel):
@@ -161,6 +187,28 @@ class RecommendationAction(BaseModel):
 class RecommendationActionResponse(BaseModel):
     message: str
     decision: RouteDecisionRead | None
+
+
+class AssignmentEngineStats(BaseModel):
+    drivers_considered: int
+    rides_considered: int
+    parcels_considered: int
+    stage1_pairs_evaluated: int
+    stage1_pairs_after_pruning: int
+    stage2_pairs_evaluated: int
+    stage2_pairs_after_pruning: int
+    solve_time_ms: float
+    optimal_cost: float
+    greedy_cost: float
+    improvement_pct: float
+    optimal_matched_count: int
+    greedy_matched_count: int
+
+
+class ConcurrencyStats(BaseModel):
+    conflicts_prevented: int
+    stress_tests_run: int
+    last_event_summary: str | None = None
 
 
 class DashboardMetrics(BaseModel):
@@ -188,6 +236,8 @@ class ActivityItem(BaseModel):
 class DashboardResponse(BaseModel):
     metrics: DashboardMetrics
     recent_activity: list[ActivityItem]
+    assignment_engine: AssignmentEngineStats
+    concurrency: ConcurrencyStats
 
 
 class AppSnapshotResponse(BaseModel):
@@ -208,4 +258,37 @@ class DemoClearResponse(BaseModel):
     cleared_rides: int
     cleared_parcels: int
     cleared_decisions: int
+    message: str
+
+
+class SeedFleetRequest(BaseModel):
+    captains: int = Field(default=5, ge=1, le=30)
+    rides: int = Field(default=10, ge=0, le=30)
+    parcels: int = Field(default=10, ge=0, le=30)
+
+
+class SeedCaptainCredential(BaseModel):
+    email: str
+    password: str
+    display_name: str
+
+
+class SeedFleetResponse(BaseModel):
+    captains: list[SeedCaptainCredential]
+    created_rides: int
+    created_parcels: int
+    message: str
+
+
+class ConcurrencyStressRequest(BaseModel):
+    ride_id: int
+    parcel_id: int
+    attempts: int = Field(default=5, ge=2, le=20)
+
+
+class ConcurrencyStressResponse(BaseModel):
+    attempts: int
+    succeeded: int
+    conflicts: int
+    winner_driver_id: int | None
     message: str

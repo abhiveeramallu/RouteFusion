@@ -1,4 +1,5 @@
-import { Clock3, Package, Settings2, ShieldCheck, UserCircle2 } from "lucide-react";
+import { Clock3, LogIn, LogOut, Package, Settings2, ShieldCheck, UserCircle2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 import { PanelCard } from "../components/PanelCard";
 import { PanelHeader } from "../components/PanelHeader";
@@ -22,7 +23,9 @@ function locationStatusLabel(status: string) {
 }
 
 export function ProfilePage() {
-  const { user, rides, parcels, dashboard, recommendation, locationStatus } = useRouteFusion();
+  const { user, rides, parcels, dashboard, recommendation, locationStatus, isAuthenticated, logout } =
+    useRouteFusion();
+  const navigate = useNavigate();
   const profileTitle =
     user?.role
       ? `${user.role.charAt(0).toUpperCase()}${user.role.slice(1)} profile`
@@ -54,6 +57,27 @@ export function ProfilePage() {
               {infoRow("Phone", "Not configured")}
               {infoRow("Role", user?.role ?? "operator")}
             </div>
+            {isAuthenticated ? (
+              <button
+                type="button"
+                onClick={() => {
+                  void logout();
+                }}
+                className="mt-4 inline-flex items-center gap-2 rounded-full border border-[#111111] px-5 py-2.5 text-sm font-semibold text-[#111827] transition hover:bg-[#111111] hover:text-white"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => navigate("/auth")}
+                className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#111111] px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-[#000000]"
+              >
+                <LogIn className="h-4 w-4" />
+                Sign in as a captain
+              </button>
+            )}
           </div>
         </div>
       </PanelCard>

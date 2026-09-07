@@ -4,9 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from app.auth import ensure_captain_profile
 from app.database import get_db
-from app.models import Driver, Parcel, Ride, RouteDecision
+from app.dependencies import get_current_user_optional
+from app.models import Driver, Parcel, Ride, RouteDecision, User
 from app.schemas import (
+    AcceptBothAnalysis,
     DriverRead,
     MessageResponse,
     ParcelRead,
@@ -16,21 +19,23 @@ from app.schemas import (
     RideRead,
     RouteDecisionRead,
 )
+from app.services.assignment_engine import AssignmentResult, run_assignment
+from app.services.concurrency import (
+    PARCEL_STATUS_COMBINED,
+    PARCEL_STATUS_SOLO,
+    RIDE_STATUS_COMBINED,
+    RIDE_STATUS_SOLO,
+    attempt_accept,
+)
 from app.services.demo_seed import ensure_demo_driver
 from app.services.pricing import estimate_customer_pricing, estimate_parcel_base_price, estimate_ride_base_price
 from app.services.route_optimizer import Waypoint, optimize_route
 
 router = APIRouter(prefix="/captain", tags=["captain"])
 
-RIDE_STATUS_COMBINED = "confirmed"
-RIDE_STATUS_SOLO = "confirmed_solo"
-PARCEL_STATUS_COMBINED = "assigned"
-PARCEL_STATUS_SOLO = "assigned_solo"
 SOLO_ROUTE_EFFICIENCY = 100.0
 RIDE_STATUS_COMPLETED = "completed"
 PARCEL_STATUS_COMPLETED = "completed"
-RIDE_STATUS_REJECTED = "rejected"
-PARCEL_STATUS_REJECTED = "rejected"
 
 
 def decision_mode_from_statuses(ride: Ride, parcel: Parcel) -> str:
@@ -232,52 +237,12 @@ def serialize_decision(
     )
 
 
-def get_candidate_rides(db: Session) -> list[Ride]:
-    return list(
-        db.scalars(
-            select(Ride).where(Ride.status == "open").order_by(desc(Ride.created_at)).limit(5)
-        )
-    )
-
-
-def get_candidate_parcels(db: Session) -> list[Parcel]:
-    return list(
-        db.scalars(
-            select(Parcel)
-            .where(Parcel.status == "open")
-            .order_by(desc(Parcel.created_at))
-            .limit(5)
-        )
-    )
-
-
 def get_latest_pair_decision(db: Session, ride_id: int, parcel_id: int) -> RouteDecision | None:
     return db.scalar(
         select(RouteDecision)
         .where(RouteDecision.ride_id == ride_id, RouteDecision.parcel_id == parcel_id)
         .order_by(desc(RouteDecision.created_at))
     )
-
-
-def get_latest_pair_decisions_for_candidates(
-    db: Session,
-    ride_ids: list[int],
-    parcel_ids: list[int],
-) -> dict[tuple[int, int], RouteDecision]:
-    if not ride_ids or not parcel_ids:
-        return {}
-
-    decisions = db.scalars(
-        select(RouteDecision)
-        .where(RouteDecision.ride_id.in_(ride_ids), RouteDecision.parcel_id.in_(parcel_ids))
-        .order_by(desc(RouteDecision.created_at))
-    )
-
-    latest_by_pair: dict[tuple[int, int], RouteDecision] = {}
-    for decision in decisions:
-        latest_by_pair.setdefault((decision.ride_id, decision.parcel_id), decision)
-
-    return latest_by_pair
 
 
 def get_latest_ride_decision(db: Session, ride_id: int) -> RouteDecision | None:
@@ -296,25 +261,28 @@ def get_latest_parcel_decision(db: Session, parcel_id: int) -> RouteDecision | N
     )
 
 
-def get_latest_confirmed_ride(db: Session) -> Ride | None:
-    return db.scalar(
+def get_active_assignment(
+    db: Session, driver: Driver
+) -> tuple[Ride | None, Parcel | None, RouteDecision | None, str] | None:
+    """A driver's currently confirmed ride/parcel, if any. Scoped by
+    `assigned_driver_id` — without this, any captain would see (and could
+    complete) whichever driver's trip happened to be the most recently
+    confirmed system-wide, which was invisible with only one driver in the
+    demo but breaks immediately with real multi-captain accounts.
+    """
+    ride = db.scalar(
         select(Ride)
-        .where(Ride.status.in_([RIDE_STATUS_COMBINED, RIDE_STATUS_SOLO]))
+        .where(Ride.assigned_driver_id == driver.id, Ride.status.in_([RIDE_STATUS_COMBINED, RIDE_STATUS_SOLO]))
         .order_by(desc(Ride.created_at))
     )
-
-
-def get_latest_confirmed_parcel(db: Session) -> Parcel | None:
-    return db.scalar(
+    parcel = db.scalar(
         select(Parcel)
-        .where(Parcel.status.in_([PARCEL_STATUS_COMBINED, PARCEL_STATUS_SOLO]))
+        .where(
+            Parcel.assigned_driver_id == driver.id,
+            Parcel.status.in_([PARCEL_STATUS_COMBINED, PARCEL_STATUS_SOLO]),
+        )
         .order_by(desc(Parcel.created_at))
     )
-
-
-def get_active_assignment(db: Session) -> tuple[Ride | None, Parcel | None, RouteDecision | None, str] | None:
-    ride = get_latest_confirmed_ride(db)
-    parcel = get_latest_confirmed_parcel(db)
 
     if ride is not None and ride.status == RIDE_STATUS_SOLO:
         return ride, None, get_latest_ride_decision(db, ride.id), "ride_only"
@@ -332,9 +300,26 @@ def get_active_assignment(db: Session) -> tuple[Ride | None, Parcel | None, Rout
     return ride, parcel, get_latest_pair_decision(db, ride.id, parcel.id), decision_mode
 
 
-def build_recommendation(db: Session) -> RecommendationResponse:
-    driver = db.scalar(select(Driver).order_by(desc(Driver.created_at))) or ensure_demo_driver(db)
-    active_assignment = get_active_assignment(db)
+def resolve_driver_for_user(db: Session, user: User | None) -> Driver:
+    """Anonymous/public traffic (no token, or an operator) falls back to the
+    single shared demo driver — the app's original public-demo behavior. A
+    logged-in captain gets their own driver profile instead, which is what
+    makes multiple real captain accounts see genuinely different queues.
+    """
+    if user is not None and user.driver is not None:
+        return user.driver
+    if user is not None and user.role == "captain":
+        return ensure_captain_profile(db, user)
+    return ensure_demo_driver(db)
+
+
+def build_recommendation(
+    db: Session,
+    current_user: User | None,
+    engine_result: AssignmentResult | None = None,
+) -> RecommendationResponse:
+    driver = resolve_driver_for_user(db, current_user)
+    active_assignment = get_active_assignment(db, driver)
     route_confirmed = active_assignment is not None
     optimization: dict[str, object] | None = None
 
@@ -367,59 +352,34 @@ def build_recommendation(db: Session) -> RecommendationResponse:
             extra_time = 0.0
             overlap_distance = 0.0
     else:
-        rides = get_candidate_rides(db)
-        parcels = get_candidate_parcels(db)
-        pair_decisions = get_latest_pair_decisions_for_candidates(
-            db,
-            [ride_candidate.id for ride_candidate in rides],
-            [parcel_candidate.id for parcel_candidate in parcels],
-        )
-
-        ride = rides[0] if rides else None
-        parcel = parcels[0] if parcels else None
+        # A caller that already ran the fleet-wide solve this request (e.g.
+        # GET /snapshot, which also needs it for /dashboard) can pass the
+        # result through instead of paying for the full two-stage Hungarian
+        # solve a second time for the same, unchanged DB state.
+        if engine_result is None:
+            engine_result = run_assignment(db)
+        assignment = engine_result.by_driver_id.get(driver.id)
+        ride = assignment.ride if assignment is not None else None
+        parcel = assignment.parcel if assignment is not None else None
         latest_decision = None
 
         if ride is not None and parcel is not None:
-            best_match: tuple[Ride, Parcel, dict[str, object]] | None = None
-            best_score: tuple[int, float, float] | None = None
-
-            for ride_candidate in rides:
-                for parcel_candidate in parcels:
-                    latest_pair_decision = pair_decisions.get((ride_candidate.id, parcel_candidate.id))
-                    if latest_pair_decision and latest_pair_decision.accepted is False:
-                        continue
-
-                    optimization_candidate = optimize_combined_route(driver, ride_candidate, parcel_candidate)
-
-                    score = (
-                        1 if optimization_candidate["recommendation"] == "ACCEPT BOTH" else 0,
-                        float(optimization_candidate["efficiency_score"]),
-                        -float(optimization_candidate["extra_distance"]),
-                    )
-                    if best_score is None or score > best_score:
-                        best_match = (ride_candidate, parcel_candidate, optimization_candidate)
-                        best_score = score
-
-            if best_match is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="No active recommendation is available right now. Create or reload requests to continue.",
-                )
-
-            ride, parcel, optimization = best_match
-            latest_decision = pair_decisions.get((ride.id, parcel.id))
+            optimization = optimize_combined_route(driver, ride, parcel)
+            latest_decision = get_latest_pair_decision(db, ride.id, parcel.id)
             decision_mode = "pending"
             efficiency_score = float(optimization["efficiency_score"])
             extra_distance = float(optimization["extra_distance"])
             extra_time = float(optimization["extra_time"])
             overlap_distance = float(optimization["overlap_distance"])
         elif ride is not None:
+            latest_decision = get_latest_ride_decision(db, ride.id)
             decision_mode = "ride_only"
             efficiency_score = SOLO_ROUTE_EFFICIENCY
             extra_distance = 0.0
             extra_time = 0.0
             overlap_distance = 0.0
         elif parcel is not None:
+            latest_decision = get_latest_parcel_decision(db, parcel.id)
             decision_mode = "parcel_only"
             efficiency_score = SOLO_ROUTE_EFFICIENCY
             extra_distance = 0.0
@@ -428,7 +388,7 @@ def build_recommendation(db: Session) -> RecommendationResponse:
         else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Create a ride or parcel request first.",
+                detail="No active recommendation is available right now. Create or reload requests to continue.",
             )
 
     if decision_mode == "ride_only":
@@ -481,6 +441,10 @@ def build_recommendation(db: Session) -> RecommendationResponse:
     else:
         recommendation_label = str(optimization["recommendation"]) if optimization is not None else "PENDING"
 
+    accept_both_analysis = (
+        AcceptBothAnalysis(**optimization["accept_both_analysis"]) if optimization is not None else None
+    )
+
     return RecommendationResponse(
         driver=DriverRead.model_validate(driver),
         ride=RideRead.model_validate(ride) if ride is not None else None,
@@ -501,22 +465,25 @@ def build_recommendation(db: Session) -> RecommendationResponse:
         parcel_route=parcel_route,
         optimized_route=optimized_route,
         recent_decision=serialize_decision(latest_decision, ride, parcel),
+        accept_both_analysis=accept_both_analysis,
     )
 
 
 @router.get("/recommendations", response_model=RecommendationResponse)
 def get_recommendations(
     db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> RecommendationResponse:
-    return build_recommendation(db)
+    return build_recommendation(db, current_user)
 
 
 @router.post("/recommendations/respond", response_model=RecommendationActionResponse)
 def respond_to_recommendation(
     payload: RecommendationAction,
     db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> RecommendationActionResponse:
-    recommendation = build_recommendation(db)
+    recommendation = build_recommendation(db, current_user)
 
     if payload.decision == "accept_both" and (recommendation.ride is None or recommendation.parcel is None):
         raise HTTPException(
@@ -536,7 +503,6 @@ def respond_to_recommendation(
             detail="No parcel is available for captain acceptance right now.",
         )
 
-    decision: RouteDecision | None = None
     decision_efficiency = recommendation.efficiency_score
     decision_extra_distance = recommendation.extra_distance
     decision_extra_time = recommendation.extra_time
@@ -544,6 +510,7 @@ def respond_to_recommendation(
     ride = db.get(Ride, recommendation.ride.id) if recommendation.ride is not None else None
     parcel = db.get(Parcel, recommendation.parcel.id) if recommendation.parcel is not None else None
     driver = db.get(Driver, recommendation.driver.id)
+
     if recommendation.ride is not None and recommendation.parcel is not None:
         if payload.decision == "accept_both" and ride is not None and parcel is not None and driver is not None:
             combined_optimization = optimize_combined_route(driver, ride, parcel)
@@ -553,7 +520,29 @@ def respond_to_recommendation(
                 decision_extra_distance = float(combined_option["extra_distance"])
                 decision_extra_time = float(combined_option["extra_time"])
                 decision_overlap_distance = float(combined_option["overlap_distance"])
+        elif payload.decision in ("accept_ride", "accept_parcel"):
+            # The default above (recommendation.efficiency_score, etc.) is
+            # the SCORED BUNDLE's numbers. Declining the bundle in favor of
+            # a solo ride/parcel is a different, unscored outcome — record
+            # the actual solo metrics instead of misattributing the bundle's
+            # score to a trip that was never combined.
+            decision_efficiency = SOLO_ROUTE_EFFICIENCY
+            decision_extra_distance = 0.0
+            decision_extra_time = 0.0
+            decision_overlap_distance = 0.0
 
+    outcome = attempt_accept(
+        db,
+        decision=payload.decision,
+        driver_id=recommendation.driver.id,
+        ride_id=ride.id if ride is not None else None,
+        parcel_id=parcel.id if parcel is not None else None,
+    )
+    if not outcome.success:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=outcome.conflict_reason)
+
+    decision: RouteDecision | None = None
+    if recommendation.ride is not None and recommendation.parcel is not None:
         decision = RouteDecision(
             driver_id=recommendation.driver.id,
             ride_id=recommendation.ride.id,
@@ -566,34 +555,6 @@ def respond_to_recommendation(
             accepted=payload.decision != "reject",
         )
         db.add(decision)
-
-    if ride and parcel and payload.decision == "accept_both":
-        ride.status = RIDE_STATUS_COMBINED
-        parcel.status = PARCEL_STATUS_COMBINED
-        if driver:
-            driver.status = "on_trip"
-    elif ride and payload.decision == "accept_ride":
-        ride.status = RIDE_STATUS_SOLO
-        if parcel:
-            parcel.status = "open"
-        if driver:
-            driver.status = "on_trip"
-    elif parcel and payload.decision == "accept_parcel":
-        if ride:
-            ride.status = "open"
-        parcel.status = PARCEL_STATUS_SOLO
-        if driver:
-            driver.status = "on_trip"
-    else:
-        if ride and parcel:
-            ride.status = "open"
-            parcel.status = "open"
-        elif ride:
-            ride.status = RIDE_STATUS_REJECTED
-        elif parcel:
-            parcel.status = PARCEL_STATUS_REJECTED
-        if driver:
-            driver.status = "available"
 
     db.commit()
     if decision is not None:
@@ -625,15 +586,17 @@ def respond_to_recommendation(
 @router.post("/recommendations/complete", response_model=MessageResponse)
 def complete_active_recommendation(
     db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> MessageResponse:
-    active_assignment = get_active_assignment(db)
+    driver = resolve_driver_for_user(db, current_user)
+    active_assignment = get_active_assignment(db, driver)
     if active_assignment is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No active captain route is available to complete right now.",
         )
 
-    recommendation = build_recommendation(db)
+    recommendation = build_recommendation(db, current_user)
     ride = db.get(Ride, recommendation.ride.id) if recommendation.ride is not None else None
     parcel = db.get(Parcel, recommendation.parcel.id) if recommendation.parcel is not None else None
     driver = db.get(Driver, recommendation.driver.id)

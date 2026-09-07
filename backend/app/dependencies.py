@@ -41,6 +41,26 @@ def get_current_user(
     return user
 
 
+def get_current_user_optional(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db),
+):
+    """Like get_current_user, but returns None instead of raising when no
+    (or an invalid/expired) token is present — lets public/anonymous demo
+    traffic keep working on routes that also want to recognize a logged-in
+    captain when one is present.
+    """
+    if credentials is None:
+        return None
+    try:
+        payload = decode_token(credentials.credentials, expected_type="access")
+    except HTTPException:
+        return None
+    if is_token_blacklisted(db, payload.get("jti")):
+        return None
+    return get_user_by_id(db, int(payload["sub"]))
+
+
 def require_roles(*roles: str):
     def dependency(current_user=Depends(get_current_user)):
         if current_user.role not in roles:

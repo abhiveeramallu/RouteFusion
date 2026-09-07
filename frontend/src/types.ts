@@ -106,6 +106,28 @@ export type RouteDecision = {
 
 export type CaptainDecision = "accept_both" | "accept_ride" | "accept_parcel" | "reject";
 
+export type AcceptBothConstraint = {
+  key: string;
+  label: string;
+  actual: number;
+  threshold: number;
+  comparison: "gte" | "lte";
+  passed: boolean;
+};
+
+export type AcceptBothAnalysis = {
+  passenger_baseline_distance: number;
+  combined_route_distance: number;
+  extra_distance: number;
+  extra_time: number;
+  passenger_delay: number;
+  overlap_distance: number;
+  efficiency_score: number;
+  route_sequence: RoutePoint[];
+  constraints: AcceptBothConstraint[];
+  all_constraints_passed: boolean;
+};
+
 export type Recommendation = {
   driver: Driver;
   ride: Ride | null;
@@ -126,6 +148,7 @@ export type Recommendation = {
   parcel_route: RoutePoint[];
   optimized_route: RoutePoint[];
   recent_decision: RouteDecision | null;
+  accept_both_analysis: AcceptBothAnalysis | null;
 };
 
 export type DashboardMetrics = {
@@ -150,9 +173,33 @@ export type ActivityItem = {
   efficiency_score: number | null;
 };
 
+export type AssignmentEngineStats = {
+  drivers_considered: number;
+  rides_considered: number;
+  parcels_considered: number;
+  stage1_pairs_evaluated: number;
+  stage1_pairs_after_pruning: number;
+  stage2_pairs_evaluated: number;
+  stage2_pairs_after_pruning: number;
+  solve_time_ms: number;
+  optimal_cost: number;
+  greedy_cost: number;
+  improvement_pct: number;
+  optimal_matched_count: number;
+  greedy_matched_count: number;
+};
+
+export type ConcurrencyStats = {
+  conflicts_prevented: number;
+  stress_tests_run: number;
+  last_event_summary: string | null;
+};
+
 export type DashboardData = {
   metrics: DashboardMetrics;
   recent_activity: ActivityItem[];
+  assignment_engine: AssignmentEngineStats;
+  concurrency: ConcurrencyStats;
 };
 
 export type AppSnapshotData = {
@@ -177,6 +224,39 @@ export type DemoClearData = {
 };
 
 export type DemoLoginResponse = AuthResponse;
+
+export type SeedFleetRequest = {
+  captains: number;
+  rides: number;
+  parcels: number;
+};
+
+export type SeedCaptainCredential = {
+  email: string;
+  password: string;
+  display_name: string;
+};
+
+export type SeedFleetData = {
+  captains: SeedCaptainCredential[];
+  created_rides: number;
+  created_parcels: number;
+  message: string;
+};
+
+export type ConcurrencyStressRequest = {
+  ride_id: number;
+  parcel_id: number;
+  attempts: number;
+};
+
+export type ConcurrencyStressData = {
+  attempts: number;
+  succeeded: number;
+  conflicts: number;
+  winner_driver_id: number | null;
+  message: string;
+};
 
 export type RideFormValues = {
   pickup_location: string;

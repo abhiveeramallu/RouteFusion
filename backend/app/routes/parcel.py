@@ -88,6 +88,7 @@ def cancel_parcel(
 
     if parcel.status == "assigned" and linked_ride is not None and linked_ride.status == "confirmed":
         linked_ride.status = "open"
+        linked_ride.assigned_driver_id = None
 
     parcel.status = "cancelled"
 
