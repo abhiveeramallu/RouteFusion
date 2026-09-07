@@ -18,26 +18,35 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("rides", sa.Column("version", sa.Integer(), nullable=False, server_default="0"))
-    op.add_column("rides", sa.Column("assigned_driver_id", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_rides_assigned_driver_id", "rides", "drivers", ["assigned_driver_id"], ["id"], ondelete="SET NULL"
-    )
-    op.create_index("ix_rides_assigned_driver_id", "rides", ["assigned_driver_id"], unique=False)
+    # batch_alter_table works on every backend: on SQLite (which can't ALTER
+    # a table to add a foreign key constraint) it transparently uses a
+    # copy-and-move strategy, and on Postgres/MySQL it just issues the plain
+    # ALTER statements directly — so this migration is safe to run
+    # regardless of which database this deployment actually points at.
+    with op.batch_alter_table("rides") as batch_op:
+        batch_op.add_column(sa.Column("version", sa.Integer(), nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column("assigned_driver_id", sa.Integer(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_rides_assigned_driver_id", "drivers", ["assigned_driver_id"], ["id"], ondelete="SET NULL"
+        )
+        batch_op.create_index("ix_rides_assigned_driver_id", ["assigned_driver_id"], unique=False)
 
-    op.add_column("parcels", sa.Column("version", sa.Integer(), nullable=False, server_default="0"))
-    op.add_column("parcels", sa.Column("assigned_driver_id", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_parcels_assigned_driver_id", "parcels", "drivers", ["assigned_driver_id"], ["id"], ondelete="SET NULL"
-    )
-    op.create_index("ix_parcels_assigned_driver_id", "parcels", ["assigned_driver_id"], unique=False)
+    with op.batch_alter_table("parcels") as batch_op:
+        batch_op.add_column(sa.Column("version", sa.Integer(), nullable=False, server_default="0"))
+        batch_op.add_column(sa.Column("assigned_driver_id", sa.Integer(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_parcels_assigned_driver_id", "drivers", ["assigned_driver_id"], ["id"], ondelete="SET NULL"
+        )
+        batch_op.create_index("ix_parcels_assigned_driver_id", ["assigned_driver_id"], unique=False)
 
     # Backfill assigned_driver_id for rides/parcels that were already
     # confirmed/assigned before this migration ran, from the most recent
     # accepted route_decisions row for each. Without this, an in-progress
     # trip at deploy time would have assigned_driver_id = NULL forever,
     # making it invisible to the new per-driver "active assignment" lookup
-    # (get_active_assignment) — an orphaned trip nobody can complete.
+    # (get_active_assignment) — an orphaned trip nobody can complete. Runs
+    # after the batch_alter_table blocks above, once the columns actually
+    # exist as queryable columns on the (possibly rebuilt) table.
     connection = op.get_bind()
     connection.execute(
         sa.text(
@@ -45,7 +54,7 @@ def upgrade() -> None:
             UPDATE rides
             SET assigned_driver_id = (
                 SELECT rd.driver_id FROM route_decisions rd
-                WHERE rd.ride_id = rides.id AND rd.accepted = true
+                WHERE rd.ride_id = rides.id AND rd.accepted = 1
                 ORDER BY rd.created_at DESC LIMIT 1
             )
             WHERE rides.status IN ('confirmed', 'confirmed_solo')
@@ -59,7 +68,7 @@ def upgrade() -> None:
             UPDATE parcels
             SET assigned_driver_id = (
                 SELECT rd.driver_id FROM route_decisions rd
-                WHERE rd.parcel_id = parcels.id AND rd.accepted = true
+                WHERE rd.parcel_id = parcels.id AND rd.accepted = 1
                 ORDER BY rd.created_at DESC LIMIT 1
             )
             WHERE parcels.status IN ('assigned', 'assigned_solo')
@@ -89,12 +98,14 @@ def downgrade() -> None:
     op.drop_index("ix_concurrency_events_created_at", table_name="concurrency_events")
     op.drop_table("concurrency_events")
 
-    op.drop_index("ix_parcels_assigned_driver_id", table_name="parcels")
-    op.drop_constraint("fk_parcels_assigned_driver_id", "parcels", type_="foreignkey")
-    op.drop_column("parcels", "assigned_driver_id")
-    op.drop_column("parcels", "version")
+    with op.batch_alter_table("parcels") as batch_op:
+        batch_op.drop_index("ix_parcels_assigned_driver_id")
+        batch_op.drop_constraint("fk_parcels_assigned_driver_id", type_="foreignkey")
+        batch_op.drop_column("assigned_driver_id")
+        batch_op.drop_column("version")
 
-    op.drop_index("ix_rides_assigned_driver_id", table_name="rides")
-    op.drop_constraint("fk_rides_assigned_driver_id", "rides", type_="foreignkey")
-    op.drop_column("rides", "assigned_driver_id")
-    op.drop_column("rides", "version")
+    with op.batch_alter_table("rides") as batch_op:
+        batch_op.drop_index("ix_rides_assigned_driver_id")
+        batch_op.drop_constraint("fk_rides_assigned_driver_id", type_="foreignkey")
+        batch_op.drop_column("assigned_driver_id")
+        batch_op.drop_column("version")
