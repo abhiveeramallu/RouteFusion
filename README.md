@@ -131,7 +131,7 @@ sequenceDiagram
     participant FE as Frontend
     participant API as GET /captain/recommendations
     participant Engine as assignment_engine.run_assignment
-    participant Opt as route_optimizer.optimize_route
+    participant Optimizer as route_optimizer.optimize_route
     participant DB as Database
 
     FE->>API: GET (JWT bearer token)
@@ -145,8 +145,8 @@ sequenceDiagram
         Engine->>Engine: Stage 2 — Hungarian(driver+ride bundles × parcels)
         Engine-->>API: AssignmentResult (per-driver ride + optional parcel)
     end
-    API->>Opt: optimize_route(driver, ride, parcel)
-    Opt-->>API: efficiency_score, extra_distance/time,<br/>accept_both_analysis, recommendation label
+    API->>Optimizer: optimize_route(driver, ride, parcel)
+    Optimizer-->>API: efficiency_score, extra_distance/time,<br/>accept_both_analysis, recommendation label
     API-->>FE: RecommendationResponse
 ```
 
