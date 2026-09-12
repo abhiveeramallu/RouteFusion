@@ -243,6 +243,11 @@ class DashboardResponse(BaseModel):
 class AppSnapshotResponse(BaseModel):
     dashboard: DashboardResponse
     recommendation: RecommendationResponse | None
+    # The calling captain's own driver row, always present regardless of
+    # whether they currently have a recommendation — lets the frontend keep
+    # showing (and correctly moving) that captain's map marker even while
+    # idle, instead of losing their position the moment their queue is empty.
+    driver: DriverRead | None
     rides: list[RideRead]
     parcels: list[ParcelRead]
 

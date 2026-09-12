@@ -24,7 +24,7 @@ from app.schemas import (
     SeedFleetResponse,
 )
 from app.services.concurrency import attempt_accept
-from app.services.demo_seed import seed_demo_scenario
+from app.services.demo_seed import ensure_named_captains, seed_demo_scenario
 from app.services.locations import KNOWN_LOCATIONS
 from app.services.runtime_state import reset_runtime_state
 
@@ -54,6 +54,19 @@ def load_demo(
         parcel=ParcelRead.model_validate(parcel),
         message="Demo scenario loaded with captain, ride, and parcel requests.",
     )
+
+
+@router.get("/named-captains", response_model=list[DriverRead])
+def get_named_captains(
+    db: Session = Depends(get_db),
+) -> list[DriverRead]:
+    """The fixed 3-captain roster (Arjun, Aditya, Vijay) for the Captain
+    Corner captain switcher. Idempotent — creates any missing captains and
+    returns all three with their current location so the frontend can show
+    each one's own recommendation.
+    """
+    drivers = ensure_named_captains(db)
+    return [DriverRead.model_validate(driver) for driver in drivers]
 
 
 @router.post("/clear", response_model=DemoClearResponse)

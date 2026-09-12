@@ -6,8 +6,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base
-from app.models import Driver, Parcel, Ride, RouteDecision
-from app.services.assignment_engine import run_assignment
+from app.models import Driver, DriverDecline, Parcel, Ride, RouteDecision
+from app.services.assignment_engine import best_match_for_driver, run_assignment
 
 
 @pytest.fixture()
@@ -107,6 +107,105 @@ def test_rejected_pair_is_not_reassigned(db_session) -> None:
     assignment = result.by_driver_id[driver.id]
     assert assignment.ride.id == ride.id
     assert assignment.parcel is None
+
+
+def test_declined_ride_flows_to_the_next_available_driver(db_session) -> None:
+    near_driver = make_driver(db_session, lat=12.9692, lng=79.1559, name="Near")
+    far_driver = make_driver(db_session, lat=12.90, lng=79.10, name="Far")
+    ride = make_ride(db_session, pickup_lat=12.9692, pickup_lng=79.1559)
+
+    # Nearer driver wins the fresh solve.
+    result = run_assignment(db_session)
+    assert result.by_driver_id[near_driver.id].ride.id == ride.id
+    assert result.by_driver_id[far_driver.id].ride is None
+
+    # That driver declines it solo — it must stay open for someone else,
+    # not disappear, and must not be re-offered to the driver who declined.
+    db_session.add(DriverDecline(driver_id=near_driver.id, ride_id=ride.id, parcel_id=None))
+    db_session.commit()
+
+    result = run_assignment(db_session)
+    assert result.by_driver_id[near_driver.id].ride is None
+    assert result.by_driver_id[far_driver.id].ride.id == ride.id
+
+
+def test_declined_parcel_flows_to_the_next_available_driver(db_session) -> None:
+    near_driver = make_driver(db_session, lat=12.9692, lng=79.1559, name="Near")
+    far_driver = make_driver(db_session, lat=12.90, lng=79.10, name="Far")
+    parcel = make_parcel(db_session, pickup_lat=12.9692, pickup_lng=79.1559)
+
+    result = run_assignment(db_session)
+    assert result.by_driver_id[near_driver.id].parcel.id == parcel.id
+    assert result.by_driver_id[far_driver.id].parcel is None
+
+    db_session.add(DriverDecline(driver_id=near_driver.id, ride_id=None, parcel_id=parcel.id))
+    db_session.commit()
+
+    result = run_assignment(db_session)
+    assert result.by_driver_id[near_driver.id].parcel is None
+    assert result.by_driver_id[far_driver.id].parcel.id == parcel.id
+
+
+def test_suitability_cap_excludes_a_driver_too_far_from_the_pickup(db_session) -> None:
+    near_driver = make_driver(db_session, lat=12.9692, lng=79.1559, name="Near")
+    far_driver = make_driver(db_session, lat=12.80, lng=79.00, name="Far")  # ~25 km away
+    ride = make_ride(db_session, pickup_lat=12.9692, pickup_lng=79.1559)
+
+    result = run_assignment(db_session)
+
+    assert result.by_driver_id[near_driver.id].ride.id == ride.id
+    assert result.by_driver_id[far_driver.id].ride is None
+
+
+def test_ride_stays_unmatched_when_no_driver_is_within_reach(db_session) -> None:
+    far_driver = make_driver(db_session, lat=12.80, lng=79.00)  # ~25 km from the pickup
+    ride = make_ride(db_session, pickup_lat=12.9692, pickup_lng=79.1559)
+
+    result = run_assignment(db_session)
+
+    assert result.by_driver_id[far_driver.id].ride is None
+
+
+def test_two_nearby_drivers_can_both_be_recommended_the_same_ride(db_session) -> None:
+    # This is the actual fix: run_assignment's fleet-wide Hungarian solve is
+    # exclusive (one driver per ride) by design, but a captain's own
+    # recommendation must NOT be read off that shared matching — otherwise a
+    # ride is only ever visible to whichever single driver the global solve
+    # happened to pick, even when another driver is equally close and free.
+    # best_match_for_driver evaluates each driver independently, so both
+    # should legitimately see the same ride as their own best option.
+    first_driver = make_driver(db_session, lat=12.9692, lng=79.1559, name="First")
+    second_driver = make_driver(db_session, lat=12.9695, lng=79.1561, name="Second")
+    ride = make_ride(db_session, pickup_lat=12.9692, pickup_lng=79.1559)
+
+    first_match = best_match_for_driver(db_session, first_driver)
+    second_match = best_match_for_driver(db_session, second_driver)
+
+    assert first_match.ride is not None and first_match.ride.id == ride.id
+    assert second_match.ride is not None and second_match.ride.id == ride.id
+
+
+def test_best_match_for_driver_respects_the_suitability_cap(db_session) -> None:
+    far_driver = make_driver(db_session, lat=12.80, lng=79.00)  # ~25 km away
+    make_ride(db_session, pickup_lat=12.9692, pickup_lng=79.1559)
+
+    match = best_match_for_driver(db_session, far_driver)
+
+    assert match.ride is None
+
+
+def test_best_match_for_driver_excludes_a_ride_this_driver_declined(db_session) -> None:
+    driver = make_driver(db_session, lat=12.9692, lng=79.1559)
+    ride = make_ride(db_session, pickup_lat=12.9692, pickup_lng=79.1559)
+
+    match_before = best_match_for_driver(db_session, driver)
+    assert match_before.ride is not None and match_before.ride.id == ride.id
+
+    db_session.add(DriverDecline(driver_id=driver.id, ride_id=ride.id, parcel_id=None))
+    db_session.commit()
+
+    match_after = best_match_for_driver(db_session, driver)
+    assert match_after.ride is None
 
 
 def test_driver_with_no_ride_gets_standalone_parcel(db_session) -> None:

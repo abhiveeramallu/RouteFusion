@@ -390,6 +390,9 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
     respondToCaptainDecision,
     completeCaptainRoute,
     setMapScenario,
+    namedCaptains,
+    activeCaptainId,
+    selectCaptain,
   } = useRouteFusion();
   const [activeMode, setActiveMode] = useState<BookingMode>(mode);
   const [rideForm, setRideForm] = useState<RideDraftValues>(createDefaultRideForm);
@@ -449,6 +452,11 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
   function switchMode(nextMode: BookingMode) {
     setActiveMode(nextMode);
     navigate(rideRouteMap[nextMode]);
+  }
+
+  function handleSelectCaptain(event: React.ChangeEvent<HTMLSelectElement>) {
+    const value = event.target.value;
+    void selectCaptain(value ? Number(value) : null);
   }
 
   function handleRideSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -921,9 +929,27 @@ export function BookingHubPage({ mode }: BookingHubPageProps) {
                   Choose whether the captain should take the ride only, the parcel only, or the combined route, while the map keeps the live path visible.
                 </p>
               </div>
-              <div className="inline-flex max-w-full items-center gap-2 rounded-full bg-[#f3f4f6] px-4 py-2 text-sm text-[#4b5563]">
-                <Clock3 className="h-4 w-4 text-[#5B5BEF]" />
-                Last action: {recommendation?.recent_decision ? "Recorded" : "Pending"}
+              <div className="flex flex-col items-end gap-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-[#4b5563]">
+                  Captain
+                  <select
+                    value={activeCaptainId ?? ""}
+                    onChange={handleSelectCaptain}
+                    disabled={namedCaptains.length === 0}
+                    className="rounded-full border border-[#dbe1e7] bg-white px-3 py-1.5 text-sm font-semibold text-[#111827] outline-none transition focus:border-[#111111]"
+                  >
+                    {namedCaptains.length === 0 ? <option value="">Loading…</option> : null}
+                    {namedCaptains.map((captain) => (
+                      <option key={captain.id} value={captain.id}>
+                        {captain.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="inline-flex max-w-full items-center gap-2 rounded-full bg-[#f3f4f6] px-4 py-2 text-sm text-[#4b5563]">
+                  <Clock3 className="h-4 w-4 text-[#5B5BEF]" />
+                  Last action: {recommendation?.recent_decision ? "Recorded" : "Pending"}
+                </div>
               </div>
             </div>
 

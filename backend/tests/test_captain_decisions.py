@@ -275,7 +275,14 @@ def test_rejecting_a_solo_ride_advances_to_the_next_ride_in_queue(client: TestCl
     assert next_recommendation_response.status_code == 200, next_recommendation_response.text
     next_recommendation = next_recommendation_response.json()
 
-    # VIT Vellore (the nearest, first-recommended ride) was just rejected and
-    # is now terminal, so Katpadi is the only remaining open ride.
+    # VIT Vellore (the nearest, first-recommended ride) was declined by this
+    # driver specifically — it stays open (not terminal) for another captain
+    # to pick up, so with only one driver available Katpadi is the only ride
+    # left for them to see.
     assert next_recommendation["ride"]["pickup_name"] == "Katpadi Railway Station"
     assert next_recommendation["ride"]["status"] == "open"
+
+    all_rides_response = client.get("/ride")
+    assert all_rides_response.status_code == 200, all_rides_response.text
+    vit_ride = next(ride for ride in all_rides_response.json() if ride["pickup_name"] == "VIT Vellore")
+    assert vit_ride["status"] == "open"

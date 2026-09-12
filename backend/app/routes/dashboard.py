@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from itertools import chain
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user_optional
 from app.models import ConcurrencyEvent, Driver, Parcel, Ride, RouteDecision, User
-from app.routes.captain import build_recommendation
+from app.routes.captain import build_recommendation, resolve_driver
 from app.schemas import (
     ActivityItem,
     AppSnapshotResponse,
@@ -17,6 +17,7 @@ from app.schemas import (
     ConcurrencyStats,
     DashboardMetrics,
     DashboardResponse,
+    DriverRead,
 )
 from app.services.assignment_engine import AssignmentResult, run_assignment
 from app.services.pricing import (
@@ -280,20 +281,21 @@ def get_dashboard(db: Session = Depends(get_db)) -> DashboardResponse:
 
 @router.get("/snapshot", response_model=AppSnapshotResponse)
 def get_snapshot(
+    driver_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
 ) -> AppSnapshotResponse:
-    # Computed once and threaded through both calls below — build_recommendation
-    # and build_dashboard_response each independently need the fleet-wide
-    # assignment solve, and re-running the full two-stage Hungarian pipeline
-    # twice for the same, unchanged DB state on every /snapshot call (the
-    # single call the frontend makes on nearly every action) would double
-    # its cost for no benefit.
+    # The fleet-wide Hungarian solve only feeds the dashboard's
+    # optimal-vs-greedy analytics below — build_recommendation computes this
+    # driver's own recommendation independently (see best_match_for_driver),
+    # so it no longer needs this result threaded through.
     engine_result = run_assignment(db)
+
+    driver = resolve_driver(db, current_user, driver_id)
 
     recommendation = None
     try:
-        recommendation = build_recommendation(db, current_user, engine_result)
+        recommendation = build_recommendation(db, current_user, driver_id=driver_id)
     except HTTPException as exc:
         if exc.status_code != 404:
             raise
@@ -304,6 +306,7 @@ def get_snapshot(
     return AppSnapshotResponse(
         dashboard=build_dashboard_response(db, engine_result),
         recommendation=recommendation,
+        driver=DriverRead.model_validate(driver),
         rides=rides,
         parcels=parcels,
     )

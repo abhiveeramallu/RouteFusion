@@ -1,13 +1,27 @@
 from fastapi.testclient import TestClient
 
 
-def test_seed_fleet_creates_real_logins_with_distinct_recommendations(client: TestClient) -> None:
+def test_seed_fleet_creates_real_logins_each_with_their_own_reachable_recommendation(client: TestClient) -> None:
+    # Regression note: this used to assert distinct captains could never be
+    # offered the same ride. That encoded the OLD design, where a
+    # recommendation was read off the fleet-wide Hungarian solve's exclusive
+    # one-driver-per-ride matching — so a ride was only ever visible to the
+    # single globally "optimal" driver. Recommendations are now built
+    # per-driver independently (see assignment_engine.best_match_for_driver),
+    # so several nearby captains legitimately CAN see the same ride at once;
+    # that's the point (see test_two_nearby_drivers_can_both_be_recommended_
+    # the_same_ride in test_assignment_engine.py for the deterministic
+    # version of that). This test just checks every captain's own
+    # recommendation call still succeeds and, when it offers a ride, that
+    # ride is a real, currently-open one.
     seed_response = client.post("/demo/seed-fleet", json={"captains": 3, "rides": 5, "parcels": 5})
     assert seed_response.status_code == 200, seed_response.text
     data = seed_response.json()
     assert len(data["captains"]) == 3
 
-    ride_ids = []
+    snapshot = client.get("/snapshot").json()
+    open_ride_ids = {ride["id"] for ride in snapshot["rides"] if ride["status"] == "open"}
+
     for credential in data["captains"]:
         login_response = client.post(
             "/auth/login", json={"email": credential["email"], "password": credential["password"]}
@@ -21,9 +35,7 @@ def test_seed_fleet_creates_real_logins_with_distinct_recommendations(client: Te
         assert recommendation_response.status_code == 200, recommendation_response.text
         ride = recommendation_response.json().get("ride")
         if ride is not None:
-            ride_ids.append(ride["id"])
-
-    assert len(set(ride_ids)) == len(ride_ids), "distinct captains must not be offered the same ride"
+            assert ride["id"] in open_ride_ids
 
 
 def test_concurrency_stress_endpoint_completes_and_resolves_to_one_winner(client: TestClient) -> None:

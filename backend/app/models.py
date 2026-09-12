@@ -110,6 +110,27 @@ class RouteDecision(Base):
     parcel = relationship("Parcel", back_populates="route_decisions")
 
 
+class DriverDecline(Base):
+    """A captain's solo decline of one specific ride or parcel — excludes
+    that request from being re-offered to this same driver (see
+    assignment_engine's stage1/stage2 cost functions), so it naturally falls
+    through to the next available captain instead of looping back to
+    whoever just turned it down. Exactly one of ride_id/parcel_id is set.
+    """
+
+    __tablename__ = "driver_declines"
+    __table_args__ = (
+        Index("ix_driver_declines_driver_ride", "driver_id", "ride_id"),
+        Index("ix_driver_declines_driver_parcel", "driver_id", "parcel_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    driver_id: Mapped[int] = mapped_column(ForeignKey("drivers.id"))
+    ride_id: Mapped[int] = mapped_column(ForeignKey("rides.id"), nullable=True)
+    parcel_id: Mapped[int] = mapped_column(ForeignKey("parcels.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ConcurrencyEvent(Base):
     __tablename__ = "concurrency_events"
 

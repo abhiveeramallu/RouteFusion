@@ -205,6 +205,7 @@ export type DashboardData = {
 export type AppSnapshotData = {
   dashboard: DashboardData;
   recommendation: Recommendation | null;
+  driver: Driver | null;
   rides: Ride[];
   parcels: Parcel[];
 };

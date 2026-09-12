@@ -110,3 +110,18 @@ CREATE INDEX IF NOT EXISTS ix_token_blacklist_jti ON token_blacklist(jti);
 CREATE INDEX IF NOT EXISTS ix_token_blacklist_token_type ON token_blacklist(token_type);
 CREATE INDEX IF NOT EXISTS ix_token_blacklist_expires_at ON token_blacklist(expires_at);
 CREATE INDEX IF NOT EXISTS ix_token_blacklist_created_at ON token_blacklist(created_at);
+
+-- A captain solo-declining one specific ride or parcel (exactly one of
+-- ride_id/parcel_id is set) — excludes it from being re-offered to that
+-- same driver; see assignment_engine.best_match_for_driver.
+CREATE TABLE IF NOT EXISTS driver_declines (
+    id SERIAL PRIMARY KEY,
+    driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+    ride_id INTEGER REFERENCES rides(id) ON DELETE CASCADE,
+    parcel_id INTEGER REFERENCES parcels(id) ON DELETE CASCADE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS ix_driver_declines_driver_ride ON driver_declines(driver_id, ride_id);
+CREATE INDEX IF NOT EXISTS ix_driver_declines_driver_parcel ON driver_declines(driver_id, parcel_id);
+CREATE INDEX IF NOT EXISTS ix_driver_declines_created_at ON driver_declines(created_at);

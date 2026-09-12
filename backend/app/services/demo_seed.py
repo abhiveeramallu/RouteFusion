@@ -3,13 +3,24 @@ from __future__ import annotations
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from app.auth import ensure_demo_user
-from app.models import Driver, Parcel, Ride
+from app.auth import ensure_demo_user, hash_password
+from app.models import Driver, Parcel, Ride, User
 from app.services.locations import resolve_location
 
 
 DEMO_DRIVER_NAME = "Captain Arjun"
 DEMO_DRIVER_STATUS = "available"
+
+NAMED_CAPTAIN_EMAIL_DOMAIN = "routefusion.demo"
+NAMED_CAPTAIN_PASSWORD = "routefusion-captain"
+# "Captain Arjun" (the classic single-demo driver above, based at VIT
+# Vellore) is always the first named captain; these are the other two fixed
+# slots for the captain switcher — VIT Vellore, Vellore Fort (~6.5 km out),
+# Virupakshipuram (~4 km out).
+NAMED_CAPTAINS: list[tuple[str, str]] = [
+    ("Captain Aditya", "Vellore Fort"),
+    ("Captain Vijay", "Virupakshipuram"),
+]
 
 
 def ensure_demo_driver(db: Session) -> Driver:
@@ -109,3 +120,47 @@ def seed_demo_scenario(db: Session) -> tuple[Driver, Ride, Parcel]:
     ride = ensure_demo_ride(db)
     parcel = ensure_demo_parcel(db)
     return driver, ride, parcel
+
+
+def ensure_named_captain(db: Session, display_name: str, location_name: str) -> Driver:
+    driver = db.scalar(select(Driver).where(Driver.display_name == display_name))
+    if driver:
+        return driver
+
+    email = f"{display_name.lower().replace(' ', '.')}@{NAMED_CAPTAIN_EMAIL_DOMAIN}"
+    user = db.scalar(select(User).where(User.email == email))
+    if not user:
+        user = User(
+            email=email,
+            full_name=display_name,
+            hashed_password=hash_password(NAMED_CAPTAIN_PASSWORD),
+            role="captain",
+            is_demo=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    location = resolve_location(location_name)
+    driver = Driver(
+        user_id=user.id,
+        display_name=display_name,
+        vehicle_type="Hybrid Cab",
+        status="available",
+        current_lat=location.lat,
+        current_lng=location.lng,
+    )
+    db.add(driver)
+    db.commit()
+    db.refresh(driver)
+    return driver
+
+
+def ensure_named_captains(db: Session) -> list[Driver]:
+    """The fixed 3-captain roster (Arjun, Aditya, Vijay) behind the Captain
+    Corner captain switcher. Idempotent, same as ensure_demo_driver — safe to
+    call on every page load.
+    """
+    arjun = ensure_demo_driver(db)
+    others = [ensure_named_captain(db, name, location_name) for name, location_name in NAMED_CAPTAINS]
+    return [arjun, *others]

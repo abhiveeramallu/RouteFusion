@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
@@ -19,7 +19,7 @@ from app.schemas import (
     RideRead,
     RouteDecisionRead,
 )
-from app.services.assignment_engine import AssignmentResult, run_assignment
+from app.services.assignment_engine import best_match_for_driver
 from app.services.concurrency import (
     PARCEL_STATUS_COMBINED,
     PARCEL_STATUS_SOLO,
@@ -313,12 +313,27 @@ def resolve_driver_for_user(db: Session, user: User | None) -> Driver:
     return ensure_demo_driver(db)
 
 
+def resolve_driver(db: Session, user: User | None, driver_id: int | None) -> Driver:
+    """`driver_id` is the Captain Corner captain-switcher override: it lets
+    the demo UI ask for a specific named captain's recommendation directly,
+    independent of whichever session/JWT is active, so a user can flip
+    between captains without logging in and out. When absent, falls back to
+    the normal JWT-derived driver.
+    """
+    if driver_id is not None:
+        driver = db.get(Driver, driver_id)
+        if driver is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Captain not found.")
+        return driver
+    return resolve_driver_for_user(db, user)
+
+
 def build_recommendation(
     db: Session,
     current_user: User | None,
-    engine_result: AssignmentResult | None = None,
+    driver_id: int | None = None,
 ) -> RecommendationResponse:
-    driver = resolve_driver_for_user(db, current_user)
+    driver = resolve_driver(db, current_user, driver_id)
     active_assignment = get_active_assignment(db, driver)
     route_confirmed = active_assignment is not None
     optimization: dict[str, object] | None = None
@@ -352,15 +367,16 @@ def build_recommendation(
             extra_time = 0.0
             overlap_distance = 0.0
     else:
-        # A caller that already ran the fleet-wide solve this request (e.g.
-        # GET /snapshot, which also needs it for /dashboard) can pass the
-        # result through instead of paying for the full two-stage Hungarian
-        # solve a second time for the same, unchanged DB state.
-        if engine_result is None:
-            engine_result = run_assignment(db)
-        assignment = engine_result.by_driver_id.get(driver.id)
-        ride = assignment.ride if assignment is not None else None
-        parcel = assignment.parcel if assignment is not None else None
+        # This driver's own best reachable ride/parcel, independent of any
+        # other driver — NOT a lookup into the fleet-wide Hungarian solve's
+        # exclusive one-driver-per-ride matching (that solve still runs for
+        # /dashboard's optimal-vs-greedy analytics, but reading a captain's
+        # recommendation from it meant a ride was only ever shown to the
+        # single globally "optimal" driver, never any other equally-suitable
+        # available captain). See best_match_for_driver's docstring.
+        assignment = best_match_for_driver(db, driver)
+        ride = assignment.ride
+        parcel = assignment.parcel
         latest_decision = None
 
         if ride is not None and parcel is not None:
@@ -471,19 +487,21 @@ def build_recommendation(
 
 @router.get("/recommendations", response_model=RecommendationResponse)
 def get_recommendations(
+    driver_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
 ) -> RecommendationResponse:
-    return build_recommendation(db, current_user)
+    return build_recommendation(db, current_user, driver_id=driver_id)
 
 
 @router.post("/recommendations/respond", response_model=RecommendationActionResponse)
 def respond_to_recommendation(
     payload: RecommendationAction,
+    driver_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
 ) -> RecommendationActionResponse:
-    recommendation = build_recommendation(db, current_user)
+    recommendation = build_recommendation(db, current_user, driver_id=driver_id)
 
     if payload.decision == "accept_both" and (recommendation.ride is None or recommendation.parcel is None):
         raise HTTPException(
@@ -585,10 +603,11 @@ def respond_to_recommendation(
 
 @router.post("/recommendations/complete", response_model=MessageResponse)
 def complete_active_recommendation(
+    driver_id: int | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
 ) -> MessageResponse:
-    driver = resolve_driver_for_user(db, current_user)
+    driver = resolve_driver(db, current_user, driver_id)
     active_assignment = get_active_assignment(db, driver)
     if active_assignment is None:
         raise HTTPException(
@@ -596,7 +615,7 @@ def complete_active_recommendation(
             detail="No active captain route is available to complete right now.",
         )
 
-    recommendation = build_recommendation(db, current_user)
+    recommendation = build_recommendation(db, current_user, driver_id=driver_id)
     ride = db.get(Ride, recommendation.ride.id) if recommendation.ride is not None else None
     parcel = db.get(Parcel, recommendation.parcel.id) if recommendation.parcel is not None else None
     driver = db.get(Driver, recommendation.driver.id)

@@ -22,6 +22,7 @@ KNOWN_LOCATIONS = {
     "vellore fort": KnownLocation("Vellore Fort", 12.9165, 79.1325),
     "bagayam": KnownLocation("Bagayam", 12.8876, 79.0907),
     "ranipet": KnownLocation("Ranipet", 12.9278, 79.3332),
+    "virupakshipuram": KnownLocation("Virupakshipuram", 12.9348, 79.1446),
 }
 
 

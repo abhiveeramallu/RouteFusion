@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from app.models import Driver, Parcel, Ride, RouteDecision
+from app.models import Driver, DriverDecline, Parcel, Ride, RouteDecision
 from app.services.hungarian import INFEASIBLE_COST, solve_rectangular_assignment
 from app.services.route_optimizer import (
     Waypoint,
@@ -20,6 +20,10 @@ from app.services.spatial_grid import GridPoint, build_grid_index, nearby
 # requests the whole pipeline still finishes in single-digit milliseconds.
 CANDIDATE_CAP = 200
 MAX_REASONABLE_BUNDLE_EXTRA_KM = 15.0
+# A driver farther than this from a ride/parcel's pickup isn't a "suitable"
+# match for it at all — better to leave the request open for a closer
+# captain than force a long, low-quality pickup leg onto whoever's left.
+MAX_REASONABLE_PICKUP_DISTANCE_KM = 15.0
 
 
 @dataclass
@@ -85,16 +89,41 @@ def _rejected_pair_ride_ids(db: Session, ride_ids: list[int], parcel_ids: list[i
     return {pair for pair, decision in latest_by_pair.items() if decision.accepted is False}
 
 
-def run_assignment(db: Session) -> AssignmentResult:
-    start = time.perf_counter()
+def _declined_ride_pairs(db: Session, driver_ids: list[int]) -> set[tuple[int, int]]:
+    """(driver_id, ride_id) pairs this driver already declined solo — kept
+    out of THEIR candidate set so the ride falls through to a different
+    available captain instead of looping back to whoever just rejected it.
+    """
+    if not driver_ids:
+        return set()
 
-    drivers = list(db.scalars(select(Driver).where(Driver.status == "available")))
-    rides = list(
+    declines = db.scalars(
+        select(DriverDecline).where(DriverDecline.driver_id.in_(driver_ids), DriverDecline.ride_id.isnot(None))
+    )
+    return {(decline.driver_id, decline.ride_id) for decline in declines}
+
+
+def _declined_parcel_pairs(db: Session, driver_ids: list[int]) -> set[tuple[int, int]]:
+    """Same as _declined_ride_pairs, for solo-declined parcels."""
+    if not driver_ids:
+        return set()
+
+    declines = db.scalars(
+        select(DriverDecline).where(DriverDecline.driver_id.in_(driver_ids), DriverDecline.parcel_id.isnot(None))
+    )
+    return {(decline.driver_id, decline.parcel_id) for decline in declines}
+
+
+def load_open_rides(db: Session) -> list[Ride]:
+    return list(
         db.scalars(
             select(Ride).where(Ride.status == "open").order_by(desc(Ride.created_at)).limit(CANDIDATE_CAP)
         )
     )
-    parcels = list(
+
+
+def load_open_parcels(db: Session) -> list[Parcel]:
+    return list(
         db.scalars(
             select(Parcel)
             .where(Parcel.status == "open")
@@ -102,6 +131,14 @@ def run_assignment(db: Session) -> AssignmentResult:
             .limit(CANDIDATE_CAP)
         )
     )
+
+
+def run_assignment(db: Session) -> AssignmentResult:
+    start = time.perf_counter()
+
+    drivers = list(db.scalars(select(Driver).where(Driver.status == "available")))
+    rides = load_open_rides(db)
+    parcels = load_open_parcels(db)
 
     rides_by_id = {ride.id: ride for ride in rides}
     parcels_by_id = {parcel.id: parcel for parcel in parcels}
@@ -139,13 +176,17 @@ def run_assignment(db: Session) -> AssignmentResult:
             stage1_pairs_after_pruning += len(candidates) or len(rides)
 
         candidate_ride_ids = sorted(rides_by_id)
+        declined_rides = _declined_ride_pairs(db, [driver.id for driver in drivers])
 
         def stage1_cost(driver: Driver, ride_id: int) -> float:
+            if (driver.id, ride_id) in declined_rides:
+                return INFEASIBLE_COST
             ride = rides_by_id[ride_id]
-            return haversine_distance_km(
+            distance = haversine_distance_km(
                 Waypoint("driver", driver.current_lat, driver.current_lng),
                 Waypoint("pickup", ride.pickup_lat, ride.pickup_lng),
             )
+            return distance if distance <= MAX_REASONABLE_PICKUP_DISTANCE_KM else INFEASIBLE_COST
 
         stage1_matrix = [
             [stage1_cost(driver, ride_id) for ride_id in candidate_ride_ids]
@@ -185,6 +226,13 @@ def run_assignment(db: Session) -> AssignmentResult:
         greedy_claimed_drivers: set[int] = set()
         greedy_claimed_rides: set[int] = set()
         for cost, driver_id, ride_id in candidate_edges:
+            if cost >= INFEASIBLE_COST:
+                # Same treatment as solve_rectangular_assignment: an
+                # infeasible edge (too far, or already declined by this
+                # driver) never counts as a real match, even as a last
+                # resort — otherwise greedy's matched count would disagree
+                # with Hungarian's purely from infeasibility bookkeeping.
+                continue
             if driver_id in greedy_claimed_drivers or ride_id in greedy_claimed_rides:
                 continue
             greedy_claimed_drivers.add(driver_id)
@@ -212,6 +260,7 @@ def run_assignment(db: Session) -> AssignmentResult:
         rejected_pairs = _rejected_pair_ride_ids(
             db, [ride.id for _, ride in assigned_bundles], [parcel.id for parcel in parcels]
         )
+        declined_parcels = _declined_parcel_pairs(db, [driver_id for driver_id, _ride in assigned_bundles])
 
         for _driver_id, ride in assigned_bundles:
             candidates = nearby(parcel_grid, ride.pickup_lat, ride.pickup_lng)
@@ -222,6 +271,8 @@ def run_assignment(db: Session) -> AssignmentResult:
 
         def stage2_cost(bundle_index: int, parcel_id: int) -> float:
             driver_id, ride = assigned_bundles[bundle_index]
+            if (driver_id, parcel_id) in declined_parcels:
+                return INFEASIBLE_COST
             driver = drivers_by_id[driver_id]
             parcel = parcels_by_id[parcel_id]
             extra = best_combined_extra_distance(
@@ -250,22 +301,27 @@ def run_assignment(db: Session) -> AssignmentResult:
             by_driver_id[driver_id].parcel = parcels_by_id[candidate_parcel_ids[col]]
 
     # Drivers with no ride can still get a standalone parcel offer: nearest
-    # open parcel not already bundled to someone else in this solve.
+    # open parcel not already bundled to someone else in this solve, as long
+    # as it's within reach and this driver hasn't already declined it.
     claimed_parcel_ids = {
         assignment.parcel.id for assignment in by_driver_id.values() if assignment.parcel is not None
     }
+    rideless_driver_ids = [driver.id for driver in drivers if by_driver_id[driver.id].ride is None]
+    declined_solo_parcels = _declined_parcel_pairs(db, rideless_driver_ids)
     for driver in drivers:
         assignment = by_driver_id[driver.id]
         if assignment.ride is not None or not parcels:
             continue
         best_parcel, best_cost = None, None
         for parcel in parcels:
-            if parcel.id in claimed_parcel_ids:
+            if parcel.id in claimed_parcel_ids or (driver.id, parcel.id) in declined_solo_parcels:
                 continue
             cost = haversine_distance_km(
                 Waypoint("driver", driver.current_lat, driver.current_lng),
                 Waypoint("pickup", parcel.pickup_lat, parcel.pickup_lng),
             )
+            if cost > MAX_REASONABLE_PICKUP_DISTANCE_KM:
+                continue
             if best_cost is None or cost < best_cost:
                 best_parcel, best_cost = parcel, cost
         if best_parcel is not None:
@@ -300,3 +356,85 @@ def run_assignment(db: Session) -> AssignmentResult:
     )
 
     return AssignmentResult(by_driver_id=by_driver_id, stats=stats)
+
+
+def best_match_for_driver(db: Session, driver: Driver) -> DriverAssignment:
+    """This driver's own best reachable ride/parcel, evaluated independently
+    of every other driver.
+
+    This is what a captain's recommendation is actually built from — NOT a
+    lookup into run_assignment's exclusive one-driver-per-ride matching.
+    That global Hungarian solve stays exactly as it was, feeding the
+    dashboard's optimal-vs-greedy analytics, but it was also (incorrectly)
+    the only thing captain.py read a recommendation from, which meant a
+    given open ride/parcel was only ever shown to the single globally
+    "optimal" driver — every other available, equally-suitable captain saw
+    nothing for it. That directly contradicts this app's own concurrency
+    story (README: "two captains can be shown overlapping recommendations;
+    only one can ever win the accept") — in practice that could only ever
+    happen via the artificial /demo/stress/concurrency endpoint, never
+    through real per-captain polling.
+
+    So: the same suitability cap and per-driver decline exclusions as
+    run_assignment's stage1/stage2 still apply here — a driver 20km away
+    still isn't shown a ride, and a ride/parcel this driver already declined
+    still isn't re-offered to them — but there is no cross-driver
+    exclusivity. Multiple nearby captains can legitimately see the same
+    ride, the same parcel, or the same combined bundle at once; the
+    optimistic-locking claim in services/concurrency.py (unchanged) is what
+    decides exactly one of them wins when they actually accept.
+    """
+    rides = load_open_rides(db)
+    parcels = load_open_parcels(db)
+
+    declined_ride_ids = {ride_id for _driver_id, ride_id in _declined_ride_pairs(db, [driver.id])}
+    declined_parcel_ids = {parcel_id for _driver_id, parcel_id in _declined_parcel_pairs(db, [driver.id])}
+
+    best_ride: Ride | None = None
+    best_ride_distance: float | None = None
+    for ride in rides:
+        if ride.id in declined_ride_ids:
+            continue
+        distance = haversine_distance_km(
+            Waypoint("driver", driver.current_lat, driver.current_lng),
+            Waypoint("pickup", ride.pickup_lat, ride.pickup_lng),
+        )
+        if distance > MAX_REASONABLE_PICKUP_DISTANCE_KM:
+            continue
+        if best_ride_distance is None or distance < best_ride_distance:
+            best_ride, best_ride_distance = ride, distance
+
+    best_parcel: Parcel | None = None
+
+    if best_ride is not None and parcels:
+        rejected_pairs = _rejected_pair_ride_ids(db, [best_ride.id], [parcel.id for parcel in parcels])
+        best_extra: float | None = None
+        for parcel in parcels:
+            if parcel.id in declined_parcel_ids or (best_ride.id, parcel.id) in rejected_pairs:
+                continue
+            extra = best_combined_extra_distance(
+                Waypoint("driver", driver.current_lat, driver.current_lng),
+                Waypoint("ride_pickup", best_ride.pickup_lat, best_ride.pickup_lng),
+                Waypoint("ride_drop", best_ride.drop_lat, best_ride.drop_lng),
+                Waypoint("parcel_pickup", parcel.pickup_lat, parcel.pickup_lng),
+                Waypoint("parcel_drop", parcel.drop_lat, parcel.drop_lng),
+            )
+            if extra > MAX_REASONABLE_BUNDLE_EXTRA_KM:
+                continue
+            if best_extra is None or extra < best_extra:
+                best_parcel, best_extra = parcel, extra
+    elif best_ride is None and parcels:
+        best_distance: float | None = None
+        for parcel in parcels:
+            if parcel.id in declined_parcel_ids:
+                continue
+            distance = haversine_distance_km(
+                Waypoint("driver", driver.current_lat, driver.current_lng),
+                Waypoint("pickup", parcel.pickup_lat, parcel.pickup_lng),
+            )
+            if distance > MAX_REASONABLE_PICKUP_DISTANCE_KM:
+                continue
+            if best_distance is None or distance < best_distance:
+                best_parcel, best_distance = parcel, distance
+
+    return DriverAssignment(driver_id=driver.id, ride=best_ride, parcel=best_parcel)

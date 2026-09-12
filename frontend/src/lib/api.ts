@@ -7,6 +7,7 @@ import type {
   DemoClearData,
   DashboardData,
   DemoLoadData,
+  Driver,
   LoginFormValues,
   Parcel,
   ParcelFormValues,
@@ -114,8 +115,16 @@ export async function getDashboard(token?: string) {
   return request<DashboardData>("/dashboard", { method: "GET" }, token);
 }
 
-export async function getSnapshot(token?: string) {
-  return request<AppSnapshotData>("/snapshot", { method: "GET" }, token);
+function driverQuery(driverId?: number | null) {
+  return driverId != null ? `?driver_id=${driverId}` : "";
+}
+
+export async function getSnapshot(token?: string, driverId?: number | null) {
+  return request<AppSnapshotData>(`/snapshot${driverQuery(driverId)}`, { method: "GET" }, token);
+}
+
+export async function getNamedCaptains() {
+  return request<Driver[]>("/demo/named-captains", { method: "GET" });
 }
 
 export async function pingHealth() {
@@ -131,8 +140,8 @@ export async function pingHealth() {
   }
 }
 
-export async function getRecommendation(token?: string) {
-  return request<Recommendation>("/captain/recommendations", { method: "GET" }, token);
+export async function getRecommendation(token?: string, driverId?: number | null) {
+  return request<Recommendation>(`/captain/recommendations${driverQuery(driverId)}`, { method: "GET" }, token);
 }
 
 export async function listRides(token?: string) {
@@ -185,9 +194,9 @@ export async function cancelParcel(parcelId: number, token?: string) {
   );
 }
 
-export async function respondToRecommendation(decision: CaptainDecision, token?: string) {
+export async function respondToRecommendation(decision: CaptainDecision, token?: string, driverId?: number | null) {
   return request<{ message: string }>(
-    "/captain/recommendations/respond",
+    `/captain/recommendations/respond${driverQuery(driverId)}`,
     {
       method: "POST",
       body: JSON.stringify({ decision }),
@@ -196,9 +205,9 @@ export async function respondToRecommendation(decision: CaptainDecision, token?:
   );
 }
 
-export async function completeCaptainRecommendation(token?: string) {
+export async function completeCaptainRecommendation(token?: string, driverId?: number | null) {
   return request<{ message: string }>(
-    "/captain/recommendations/complete",
+    `/captain/recommendations/complete${driverQuery(driverId)}`,
     {
       method: "POST",
     },

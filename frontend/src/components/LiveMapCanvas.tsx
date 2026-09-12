@@ -479,7 +479,7 @@ function PreviewCanvas({
 
   const labeledPoints = [
     scenario.currentLocation
-      ? { point: scenario.currentLocation, label: "H", title: "VIT service hub", fill: "#111111" }
+      ? { point: scenario.currentLocation, label: "C", title: scenario.currentLocation.name, fill: "#111111" }
       : null,
     scenario.passengerRoute[0]
       ? { point: scenario.passengerRoute[0], label: "P", title: "Passenger pickup", fill: "#22C55E" }
@@ -885,8 +885,8 @@ export function LiveMapCanvas({ scenario }: LiveMapCanvasProps) {
         {scenario.currentLocation ? (
           <MarkerF
             position={scenario.currentLocation}
-            label="H"
-            title="VIT service hub"
+            label="C"
+            title={scenario.currentLocation.name}
             icon={{
               path: google.maps.SymbolPath.CIRCLE,
               fillColor: "#111111",

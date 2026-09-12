@@ -6,7 +6,7 @@ from typing import Literal
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
-from app.models import Driver, Parcel, Ride
+from app.models import Driver, DriverDecline, Parcel, Ride
 
 AcceptDecision = Literal["accept_both", "accept_ride", "accept_parcel", "reject"]
 
@@ -14,8 +14,6 @@ RIDE_STATUS_COMBINED = "confirmed"
 RIDE_STATUS_SOLO = "confirmed_solo"
 PARCEL_STATUS_COMBINED = "assigned"
 PARCEL_STATUS_SOLO = "assigned_solo"
-RIDE_STATUS_REJECTED = "rejected"
-PARCEL_STATUS_REJECTED = "rejected"
 
 
 @dataclass
@@ -155,13 +153,19 @@ def attempt_accept(
                 db.rollback()
                 return AcceptOutcome(success=False, conflict_reason="This request was already claimed by another captain.")
         elif ride is not None:
-            if not _release_ride(db, ride, new_status=RIDE_STATUS_REJECTED):
+            # A solo ride decline is this driver turning down THIS ride, not
+            # the ride itself becoming invalid — reopen it so the next solve
+            # can offer it to a different available captain, and record the
+            # decline so this same driver isn't offered it again.
+            if not _release_ride(db, ride, new_status="open"):
                 db.rollback()
                 return AcceptOutcome(success=False, conflict_reason="This ride was already claimed by another captain.")
+            db.add(DriverDecline(driver_id=driver_id, ride_id=ride.id, parcel_id=None))
         elif parcel is not None:
-            if not _release_parcel(db, parcel, new_status=PARCEL_STATUS_REJECTED):
+            if not _release_parcel(db, parcel, new_status="open"):
                 db.rollback()
                 return AcceptOutcome(success=False, conflict_reason="This parcel was already claimed by another captain.")
+            db.add(DriverDecline(driver_id=driver_id, ride_id=None, parcel_id=parcel.id))
         if driver is not None:
             driver.status = "available"
 

@@ -14,6 +14,7 @@ import {
   completeCaptainRecommendation,
   createParcel,
   createRide,
+  getNamedCaptains,
   getSnapshot,
   logoutSession,
   loadDemo,
@@ -30,6 +31,7 @@ import type {
   CaptainDecision,
   ConcurrencyStressData,
   DashboardData,
+  Driver,
   LoginFormValues,
   MapScenario,
   Parcel,
@@ -69,6 +71,10 @@ type RouteFusionContextValue = {
   bannerMessage: string | null;
   locationToast: string | null;
   mapScenario: MapScenario | null;
+  namedCaptains: Driver[];
+  selectedCaptainId: number | null;
+  activeCaptainId: number | null;
+  selectCaptain: (driverId: number | null) => Promise<void>;
   refreshAll: () => Promise<void>;
   login: (payload: LoginFormValues) => Promise<UserSession>;
   signup: (payload: SignupFormValues) => Promise<UserSession>;
@@ -90,16 +96,20 @@ type RouteFusionContextValue = {
 
 const RouteFusionContext = createContext<RouteFusionContextValue | undefined>(undefined);
 
-function recommendationDriverLocation(recommendation: Recommendation | null): RoutePoint | null {
-  if (!recommendation) {
+function driverRoutePoint(driver: Driver | null | undefined): RoutePoint | null {
+  if (!driver) {
     return null;
   }
 
   return {
-    name: recommendation.driver.display_name,
-    lat: recommendation.driver.current_lat,
-    lng: recommendation.driver.current_lng,
+    name: driver.display_name,
+    lat: driver.current_lat,
+    lng: driver.current_lng,
   };
+}
+
+function recommendationDriverLocation(recommendation: Recommendation | null): RoutePoint | null {
+  return driverRoutePoint(recommendation?.driver);
 }
 
 function finalCaptainLocation(recommendation: Recommendation | null): RoutePoint | null {
@@ -141,8 +151,8 @@ function writeStoredSession(session: AuthResponse | null) {
   }
 }
 
-async function fetchSnapshot(token?: string | null) {
-  return getSnapshot(token ?? undefined);
+async function fetchSnapshot(token?: string | null, driverId?: number | null) {
+  return getSnapshot(token ?? undefined, driverId);
 }
 
 export function RouteFusionProvider({ children }: { children: ReactNode }) {
@@ -164,12 +174,17 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
   const [bannerMessage, setBannerMessage] = useState<string | null>(null);
   const [locationToast, setLocationToast] = useState<string | null>(null);
   const [mapScenario, setMapScenario] = useState<MapScenario | null>(null);
+  const [namedCaptains, setNamedCaptains] = useState<Driver[]>([]);
+  const [selectedCaptainId, setSelectedCaptainId] = useState<number | null>(null);
 
   function applySession(session: AuthResponse) {
     setToken(session.access_token);
     setRefreshToken(session.refresh_token);
     setUser(session.user);
     writeStoredSession(session);
+    // A captain-switcher override picked before logging in must not keep
+    // shadowing this session's own driver on every later refresh.
+    setSelectedCaptainId(null);
   }
 
   function clearSessionState() {
@@ -177,12 +192,14 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     setRefreshToken(null);
     setUser(publicUser);
     writeStoredSession(null);
+    setSelectedCaptainId(null);
   }
 
   function applySnapshot(
     snapshot: {
       dashboard: DashboardData | null;
       recommendation: Recommendation | null;
+      driver?: Driver | null;
       rides: Ride[];
       parcels: Parcel[];
     },
@@ -194,6 +211,12 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     setParcels(snapshot.parcels);
     setCurrentLocation(
       recommendationDriverLocation(snapshot.recommendation)
+        // Even with no active recommendation, /snapshot still reports this
+        // captain's own driver row — keeps their marker sitting at their
+        // real (just-updated, if a route just completed) position instead
+        // of falling back to a generic default the moment their queue is
+        // empty.
+        ?? driverRoutePoint(snapshot.driver)
         ?? fallbackLocation
         ?? defaultVelloreLocation,
     );
@@ -203,7 +226,7 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     setRefreshing(true);
     setError(null);
     try {
-      const snapshot = await fetchSnapshot(token);
+      const snapshot = await fetchSnapshot(token, selectedCaptainId);
       applySnapshot(snapshot, currentLocation);
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : "Unable to refresh RouteFusion.");
@@ -337,11 +360,20 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
   async function respondToCaptainDecision(decision: CaptainDecision) {
     setError(null);
     try {
-      const response = await respondToRecommendation(decision, token ?? undefined);
+      const response = await respondToRecommendation(decision, token ?? undefined, selectedCaptainId);
       setBannerMessage(response.message);
       await refreshAll();
     } catch (decisionError) {
-      if (decisionError instanceof ApiError && (decisionError.status === 404 || decisionError.status === 409)) {
+      // 400 here specifically means this decision no longer matches what
+      // build_recommendation would compute right now (e.g. accept_both was
+      // clicked but another captain just took the parcel half of the same
+      // bundle) — a staleness case exactly like 404/409, not a real
+      // validation error the captain caused, so it gets the same
+      // refresh-and-recover treatment.
+      if (
+        decisionError instanceof ApiError &&
+        (decisionError.status === 404 || decisionError.status === 409 || decisionError.status === 400)
+      ) {
         setBannerMessage(
           decisionError.status === 409
             ? "Another captain just took this request. RouteFusion refreshed the queue."
@@ -362,9 +394,9 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
       if (completedLocation) {
         setCurrentLocation(completedLocation);
       }
-      const response = await completeCaptainRecommendation(token ?? undefined);
+      const response = await completeCaptainRecommendation(token ?? undefined, selectedCaptainId);
       setBannerMessage(response.message);
-      const snapshot = await fetchSnapshot(token);
+      const snapshot = await fetchSnapshot(token, selectedCaptainId);
       applySnapshot(snapshot, completedLocation ?? currentLocation);
     } catch (completionError) {
       if (completionError instanceof ApiError && completionError.status === 404) {
@@ -400,6 +432,21 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
     } catch (stressError) {
       setError(stressError instanceof Error ? stressError.message : "Unable to run the concurrency stress test.");
       throw stressError;
+    }
+  }
+
+  async function selectCaptain(driverId: number | null) {
+    setError(null);
+    setRefreshing(true);
+    try {
+      setSelectedCaptainId(driverId);
+      const snapshot = await fetchSnapshot(token, driverId);
+      applySnapshot(snapshot);
+    } catch (selectError) {
+      setError(selectError instanceof Error ? selectError.message : "Unable to load that captain's recommendation.");
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
     }
   }
 
@@ -449,6 +496,8 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
         await pingHealth().catch(() => undefined);
         const snapshot = await fetchSnapshot(storedSession?.access_token);
         applySnapshot(snapshot);
+        const captains = await getNamedCaptains().catch(() => []);
+        setNamedCaptains(captains);
       } catch (bootstrapError) {
         setError(
           bootstrapError instanceof Error ? bootstrapError.message : "Unable to load RouteFusion.",
@@ -462,6 +511,8 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
 
     void bootstrap();
   }, []);
+
+  const activeCaptainId = selectedCaptainId ?? recommendation?.driver.id ?? null;
 
   return (
     <RouteFusionContext.Provider
@@ -482,6 +533,10 @@ export function RouteFusionProvider({ children }: { children: ReactNode }) {
         bannerMessage,
         locationToast,
         mapScenario,
+        namedCaptains,
+        selectedCaptainId,
+        activeCaptainId,
+        selectCaptain,
         refreshAll,
         login,
         signup,
