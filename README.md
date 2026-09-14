@@ -1,6 +1,6 @@
 # RouteFusion
 
-RouteFusion combines a passenger ride and a parcel delivery into a single optimized trip. A captain sees one AI-backed recommendation — accept both, accept just the ride, accept just the parcel, or reject — and the app explains exactly why, using a real two-stage Hungarian (optimal assignment) algorithm instead of a heuristic score.
+RouteFusion combines a passenger ride and a parcel delivery into a single optimized trip. A captain sees one recommendation — accept both, accept just the ride, accept just the parcel, or reject — and the app explains exactly why, using a real two-stage Hungarian (optimal assignment) algorithm instead of a heuristic score.
 
 By default the app runs in **transient in-memory mode**: zero external database, fresh state on every boot. PostgreSQL is fully supported when you want persistence instead.
 
